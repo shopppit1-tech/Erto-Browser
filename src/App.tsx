@@ -55,6 +55,7 @@ import {
 } from './components/BrowserModals';
 import { OfflineIndicator } from './components/PWAInstallUI';
 import { apiUrl } from './utils/api';
+import { ErtoWebView, isNativeAndroidApk } from './utils/nativeBrowser';
 
 function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -123,6 +124,33 @@ export default function App() {
     'erto_settings_v1',
     DEFAULT_BROWSER_SETTINGS
   );
+
+  useEffect(() => {
+    if (!isNativeAndroidApk()) return;
+    let disposed = false;
+    ErtoWebView.listExtensions()
+      .then(({ extensions: runtimeExtensions }) => {
+        if (disposed) return;
+        setExtensions((previous) => DEFAULT_EXTENSIONS.map((item) => {
+          const oldItem = previous.find((candidate) => candidate.id === item.id);
+          const slug = item.amoSlug?.toLowerCase();
+          const installed = runtimeExtensions.find((nativeExtension) =>
+            (oldItem?.runtimeId && nativeExtension.runtimeId === oldItem.runtimeId) ||
+            (item.amoPageUrl && nativeExtension.amoPageUrl === item.amoPageUrl) ||
+            (slug && `${nativeExtension.amoPageUrl} ${nativeExtension.xpiUrl}`.toLowerCase().includes(slug))
+          );
+          return {
+            ...item,
+            installed: Boolean(installed),
+            enabled: installed?.enabled ?? false,
+            runtimeId: installed?.runtimeId,
+            version: installed?.version || item.version,
+          };
+        }));
+      })
+      .catch((error) => console.warn('Gagal menyinkronkan ekstensi GeckoView', error));
+    return () => { disposed = true; };
+  }, [setExtensions]);
 
   const [tabs, setTabs] = useState<BrowserTab[]>([
     {
@@ -630,92 +658,70 @@ export default function App() {
   );
 
   const handleInstallExtension = useCallback(
-    (id: string) => {
-      setExtensions((prev) =>
-        prev.map((ext) => {
-          if (ext.id !== id) return ext;
-          const nextInstalled = !ext.installed;
-          showToast(nextInstalled ? `${ext.name} dipasang & aktif` : `${ext.name} dihapus`);
-          return {
-            ...ext,
-            installed: nextInstalled,
-            enabled: nextInstalled,
-          };
-        })
-      );
+    async (id: string) => {
+      const item = extensions.find((extension) => extension.id === id);
+      if (!item) return;
+      if (!isNativeAndroidApk()) {
+        showToast('Pemasangan ekstensi hanya tersedia di APK Android GeckoView');
+        return;
+      }
+      if (!item.xpiUrl) {
+        showToast(`${item.name} belum memiliki paket XPI AMO yang didukung`);
+        return;
+      }
+      try {
+        const installed = await ErtoWebView.installExtension({ catalogId: item.id, xpiUrl: item.xpiUrl });
+        setExtensions((previous) => previous.map((extension) => extension.id === id
+          ? { ...extension, installed: true, enabled: installed.enabled, runtimeId: installed.runtimeId, version: installed.version || extension.version }
+          : extension));
+        showToast(`${installed.name || item.name} terpasang di GeckoView`);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error || 'pemasangan dibatalkan');
+        showToast(`Ekstensi tidak dipasang: ${reason}`);
+      }
     },
-    [setExtensions, showToast]
+    [extensions, setExtensions, showToast]
   );
 
   const handleToggleExtensionEnabled = useCallback(
-    (id: string) => {
-      setExtensions((prev) =>
-        prev.map((ext) => {
-          if (ext.id !== id) return ext;
-          const next = !ext.enabled;
-          showToast(`${ext.name} ${next ? 'diaktifkan' : 'dinonaktifkan'}`);
-          return { ...ext, enabled: next };
-        })
-      );
+    async (id: string) => {
+      const item = extensions.find((extension) => extension.id === id);
+      if (!item?.runtimeId || !isNativeAndroidApk()) return;
+      try {
+        const updated = await ErtoWebView.setExtensionEnabled({ runtimeId: item.runtimeId, enabled: !item.enabled });
+        setExtensions((previous) => previous.map((extension) => extension.id === id
+          ? { ...extension, enabled: updated.enabled }
+          : extension));
+        showToast(`${item.name} ${updated.enabled ? 'diaktifkan' : 'dinonaktifkan'} di GeckoView`);
+      } catch (error) {
+        showToast(`Gagal mengubah ${item.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     },
-    [setExtensions, showToast]
+    [extensions, setExtensions, showToast]
   );
 
   const handleRemoveExtension = useCallback(
-    (id: string) => {
-      setExtensions((prev) =>
-        prev.map((ext) => {
-          if (ext.id !== id) return ext;
-          showToast(`${ext.name} dihapus`);
-          return { ...ext, installed: false, enabled: false };
-        })
-      );
+    async (id: string) => {
+      const item = extensions.find((extension) => extension.id === id);
+      if (!item?.runtimeId || !isNativeAndroidApk()) return;
+      try {
+        await ErtoWebView.removeExtension({ runtimeId: item.runtimeId });
+        setExtensions((previous) => previous.map((extension) => extension.id === id
+          ? { ...extension, installed: false, enabled: false, runtimeId: undefined }
+          : extension));
+        showToast(`${item.name} dihapus dari GeckoView`);
+      } catch (error) {
+        showToast(`Gagal menghapus ${item.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     },
-    [setExtensions, showToast]
+    [extensions, setExtensions, showToast]
   );
 
   const handleInstallCwsItem = useCallback(
     (item: LiveCwsItem) => {
-      setExtensions((prev) => {
-        const existing = prev.find(
-          (e) =>
-            e.cwsId === item.cwsId ||
-            e.name.toLowerCase() === item.name.toLowerCase()
-        );
-        if (existing) {
-          const nextInstalled = !existing.installed;
-          showToast(nextInstalled ? `${existing.name} dipasang` : `${existing.name} dihapus`);
-          return prev.map((e) =>
-            e.id === existing.id
-              ? { ...e, installed: nextInstalled, enabled: nextInstalled }
-              : e
-          );
-        }
-        showToast(`${item.name} dipasang dari Chrome Web Store`);
-        return [
-          {
-            id: `cws-${item.cwsId}`,
-            cwsId: item.cwsId,
-            name: item.name,
-            description: item.description,
-            rating: item.rating,
-            category: 'Chrome Web Store',
-            version: '1.0',
-            iconKey: 'default',
-            iconUrl: item.iconUrl,
-            storeUrl: item.storeUrl,
-            publisher: item.publisher,
-            isFromCws: true,
-            installed: true,
-            enabled: true,
-            featured: true,
-            permissions: ['Ekstensi Chrome Web Store'],
-          },
-          ...prev,
-        ];
-      });
+      showToast(`${item.name}: paket CRX Chrome Web Store tidak bisa dipasang di GeckoView. Gunakan add-on XPI AMO yang kompatibel.`);
     },
-    [setExtensions, showToast]
+    [showToast]
   );
 
   const handleDownloadCrx = useCallback(
@@ -842,7 +848,6 @@ export default function App() {
               onEnableToggle={handleToggleExtensionEnabled}
               onRemoveExtension={handleRemoveExtension}
               onUpdateSettings={setExtSettings}
-              onOpenChromeWebStore={() => setWebStoreOpen(true)}
               onOpenOverflowMenu={() => setMenuOpen(true)}
             />
           )}

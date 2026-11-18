@@ -71,6 +71,10 @@ export interface ExtensionItem {
   storeUrl?: string;
   publisher?: string;
   isFromCws?: boolean;
+  amoSlug?: string;
+  amoPageUrl?: string;
+  xpiUrl?: string;
+  runtimeId?: string;
   installed: boolean;
   enabled: boolean;
   featured: boolean;

@@ -1,7 +1,9 @@
 package com.erto.browser;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.graphics.Color;
+import android.net.Uri;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
@@ -15,10 +17,12 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import org.json.JSONObject;
 
 import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebExtension;
@@ -29,7 +33,10 @@ import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -52,6 +59,7 @@ public class ErtoWebViewPlugin extends Plugin {
     private boolean desktopModeEnabled = false;
     private boolean canGoBack = false;
     private boolean canGoForward = false;
+    private boolean promptDelegateConfigured = false;
     private String lastLoadedUrl = "";
     private WebExtension.Port messagePort;
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -60,6 +68,61 @@ public class ErtoWebViewPlugin extends Plugin {
     public void load() {
         super.load();
         activeInstance = new WeakReference<>(this);
+    }
+
+    private WebExtensionController getExtensionController() {
+        if (runtime == null) runtime = GeckoRuntime.getDefault(getContext());
+        WebExtensionController controller = runtime.getWebExtensionController();
+        if (!promptDelegateConfigured) {
+            controller.setPromptDelegate(new WebExtensionController.PromptDelegate() {
+                @Override
+                public GeckoResult<WebExtension.PermissionPromptResponse> onInstallPromptRequest(
+                        WebExtension extension, String[] permissions, String[] origins,
+                        String[] dataCollectionPermissions) {
+                    GeckoResult<WebExtension.PermissionPromptResponse> result = new GeckoResult<>();
+                    android.app.Activity activity = getActivity();
+                    if (activity == null) {
+                        result.complete(new WebExtension.PermissionPromptResponse(false, false, false));
+                        return result;
+                    }
+                    StringBuilder message = new StringBuilder("Izin yang diminta:");
+                    if (permissions != null && permissions.length > 0) {
+                        message.append("\n\nAPI: ").append(Arrays.toString(permissions));
+                    }
+                    if (origins != null && origins.length > 0) {
+                        message.append("\n\nAkses situs: ").append(Arrays.toString(origins));
+                    }
+                    if (dataCollectionPermissions != null && dataCollectionPermissions.length > 0) {
+                        message.append("\n\nPengumpulan data: ").append(Arrays.toString(dataCollectionPermissions));
+                    }
+                    message.append("\n\nAkses mode penyamaran tidak diaktifkan.");
+                    AtomicBoolean answered = new AtomicBoolean(false);
+                    activity.runOnUiThread(() -> new AlertDialog.Builder(activity)
+                        .setTitle("Izinkan " + extension.metaData.name)
+                        .setMessage(message.toString())
+                        .setPositiveButton("Izinkan & pasang", (dialog, which) -> {
+                            if (answered.compareAndSet(false, true)) {
+                                result.complete(new WebExtension.PermissionPromptResponse(
+                                    true, false, dataCollectionPermissions != null && dataCollectionPermissions.length > 0));
+                            }
+                        })
+                        .setNegativeButton("Batal", (dialog, which) -> {
+                            if (answered.compareAndSet(false, true)) {
+                                result.complete(new WebExtension.PermissionPromptResponse(false, false, false));
+                            }
+                        })
+                        .setOnCancelListener(dialog -> {
+                            if (answered.compareAndSet(false, true)) {
+                                result.complete(new WebExtension.PermissionPromptResponse(false, false, false));
+                            }
+                        })
+                        .show());
+                    return result;
+                }
+            });
+            promptDelegateConfigured = true;
+        }
+        return controller;
     }
 
     // The Capacitor shell still uses this configuration for its own bridge WebView.
@@ -130,9 +193,9 @@ public class ErtoWebViewPlugin extends Plugin {
             updateMargins(topOffsetPx);
             return;
         }
-        runtime = GeckoRuntime.getDefault(getContext());
+        getExtensionController();
         browserSession = new GeckoSession();
-        runtime.getWebExtensionController().ensureBuiltIn(EXTENSION_URI, EXTENSION_ID)
+        getExtensionController().ensureBuiltIn(EXTENSION_URI, EXTENSION_ID)
             .accept(extension -> {
                 privacyExtension = extension;
                 browserSession.getWebExtensionController().setMessageDelegate(extension, new WebExtension.MessageDelegate() {
@@ -287,5 +350,88 @@ public class ErtoWebViewPlugin extends Plugin {
             } catch (Throwable error) { call.reject("Gagal mengambil halaman", error.toString()); }
             finally { if (conn != null) conn.disconnect(); }
         });
+    }
+
+    private JSObject extensionToJS(WebExtension extension) {
+        JSObject item = new JSObject();
+        item.put("runtimeId", extension.id);
+        item.put("name", extension.metaData.name == null ? "" : extension.metaData.name);
+        item.put("description", extension.metaData.description == null ? "" : extension.metaData.description);
+        item.put("version", extension.metaData.version == null ? "" : extension.metaData.version);
+        item.put("enabled", extension.metaData.enabled);
+        item.put("xpiUrl", extension.metaData.downloadUrl == null ? "" : extension.metaData.downloadUrl);
+        item.put("amoPageUrl", extension.metaData.amoListingUrl == null ? "" : extension.metaData.amoListingUrl);
+        return item;
+    }
+
+    @PluginMethod
+    public void listExtensions(PluginCall call) {
+        WebExtensionController controller = getExtensionController();
+        controller.list().accept(extensions -> {
+            List<JSObject> result = new ArrayList<>();
+            for (WebExtension extension : extensions) {
+                if (!EXTENSION_ID.equals(extension.id)) result.add(extensionToJS(extension));
+            }
+            JSObject response = new JSObject();
+            response.put("extensions", result);
+            call.resolve(response);
+        }, error -> call.reject("Gagal membaca daftar ekstensi: " + error));
+    }
+
+    @PluginMethod
+    public void installExtension(PluginCall call) {
+        String xpiUrl = call.getString("xpiUrl", "");
+        String catalogId = call.getString("catalogId", "");
+        Uri uri = Uri.parse(xpiUrl == null ? "" : xpiUrl);
+        if (!"https".equalsIgnoreCase(uri.getScheme())
+                || !"addons.mozilla.org".equalsIgnoreCase(uri.getHost())
+                || uri.getPath() == null || !uri.getPath().endsWith(".xpi")) {
+            call.reject("Sumber ekstensi harus berupa XPI HTTPS dari addons.mozilla.org");
+            return;
+        }
+
+        WebExtensionController controller = getExtensionController();
+        controller.install(uri.toString(), WebExtensionController.INSTALLATION_METHOD_MANAGER)
+            .accept(extension -> controller.enable(extension, WebExtensionController.EnableSource.USER)
+                .accept(enabledExtension -> {
+                    JSObject result = extensionToJS(enabledExtension);
+                    result.put("catalogId", catalogId == null ? "" : catalogId);
+                    call.resolve(result);
+                }, error -> call.reject("Ekstensi terpasang tetapi gagal diaktifkan: " + error)),
+                error -> call.reject("Pemasangan ekstensi gagal: " + error));
+    }
+
+    @PluginMethod
+    public void setExtensionEnabled(PluginCall call) {
+        String runtimeId = call.getString("runtimeId", "");
+        boolean enabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
+        WebExtensionController controller = getExtensionController();
+        controller.list().accept(extensions -> {
+            for (WebExtension extension : extensions) {
+                if (!extension.id.equals(runtimeId) || EXTENSION_ID.equals(extension.id)) continue;
+                GeckoResult<WebExtension> result = enabled
+                    ? controller.enable(extension, WebExtensionController.EnableSource.USER)
+                    : controller.disable(extension, WebExtensionController.EnableSource.USER);
+                result.accept(updated -> call.resolve(extensionToJS(updated)),
+                    error -> call.reject("Gagal mengubah status ekstensi: " + error));
+                return;
+            }
+            call.reject("Ekstensi tidak ditemukan di GeckoView");
+        }, error -> call.reject("Gagal membaca daftar ekstensi", error.toString()));
+    }
+
+    @PluginMethod
+    public void removeExtension(PluginCall call) {
+        String runtimeId = call.getString("runtimeId", "");
+        WebExtensionController controller = getExtensionController();
+        controller.list().accept(extensions -> {
+            for (WebExtension extension : extensions) {
+                if (!extension.id.equals(runtimeId) || EXTENSION_ID.equals(extension.id)) continue;
+                controller.uninstall(extension).accept(value -> call.resolve(),
+                    error -> call.reject("Gagal menghapus ekstensi: " + error));
+                return;
+            }
+            call.reject("Ekstensi tidak ditemukan di GeckoView");
+        }, error -> call.reject("Gagal membaca daftar ekstensi", error.toString()));
     }
 }
