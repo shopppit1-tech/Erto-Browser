@@ -16,6 +16,7 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import org.json.JSONObject;
 
 import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoSession;
@@ -49,7 +50,10 @@ public class ErtoWebViewPlugin extends Plugin {
     private boolean adblockEnabled = true;
     private boolean darkModeEnabled = false;
     private boolean desktopModeEnabled = false;
+    private boolean canGoBack = false;
+    private boolean canGoForward = false;
     private String lastLoadedUrl = "";
+    private WebExtension.Port messagePort;
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     @Override
@@ -87,7 +91,7 @@ public class ErtoWebViewPlugin extends Plugin {
         ErtoWebViewPlugin inst = activeInstance == null ? null : activeInstance.get();
         if (inst == null || inst.browserSession == null || inst.browserView == null
                 || inst.browserView.getVisibility() != View.VISIBLE) return false;
-        if (inst.browserSession.canGoBack()) {
+        if (inst.canGoBack) {
             inst.browserSession.goBack();
             return true;
         }
@@ -98,18 +102,20 @@ public class ErtoWebViewPlugin extends Plugin {
         JSObject state = new JSObject();
         state.put("url", url == null ? "" : url);
         state.put("title", title == null ? "" : title);
-        state.put("canGoBack", browserSession != null && browserSession.canGoBack());
-        state.put("canGoForward", browserSession != null && browserSession.canGoForward());
+        state.put("canGoBack", canGoBack);
+        state.put("canGoForward", canGoForward);
         state.put("loading", loading);
         notifyListeners("pageState", state);
     }
 
     private void applyDarkReaderCss() {
-        if (browserSession == null) return;
-        String js = darkModeEnabled
-            ? "(function(){var s=document.getElementById('erto-dark-reader');if(!s){s=document.createElement('style');s.id='erto-dark-reader';s.textContent='html{filter:invert(.92) hue-rotate(180deg)!important;background:#0b1220!important}img,video,picture,canvas{filter:invert(1) hue-rotate(180deg)!important}';(document.head||document.documentElement).appendChild(s)}})();"
-            : "(function(){var s=document.getElementById('erto-dark-reader');if(s)s.remove()})();";
-        browserSession.evaluateJS(js);
+        if (messagePort == null) return;
+        try {
+            JSONObject message = new JSONObject();
+            message.put("type", "darkMode");
+            message.put("enabled", darkModeEnabled);
+            messagePort.postMessage(message);
+        } catch (org.json.JSONException ignored) {}
     }
 
     private void syncExtensionState() {
@@ -125,10 +131,27 @@ public class ErtoWebViewPlugin extends Plugin {
             return;
         }
         runtime = GeckoRuntime.getDefault(getContext());
-        runtime.getWebExtensionController().ensureBuiltIn(EXTENSION_URI, EXTENSION_ID)
-            .accept(extension -> { privacyExtension = extension; syncExtensionState(); }, error -> {});
-
         browserSession = new GeckoSession();
+        runtime.getWebExtensionController().ensureBuiltIn(EXTENSION_URI, EXTENSION_ID)
+            .accept(extension -> {
+                privacyExtension = extension;
+                browserSession.getWebExtensionController().setMessageDelegate(extension, new WebExtension.MessageDelegate() {
+                    @Override public void onConnect(WebExtension.Port port) {
+                        messagePort = port;
+                        port.setDelegate(new WebExtension.PortDelegate() {
+                            @Override public void onPortMessage(Object message, WebExtension.Port source) {
+                                if (source == messagePort) applyDarkReaderCss();
+                            }
+                            @Override public void onDisconnect(WebExtension.Port source) {
+                                if (source == messagePort) messagePort = null;
+                            }
+                        });
+                        applyDarkReaderCss();
+                    }
+                }, "erto");
+                syncExtensionState();
+            }, error -> {});
+
         browserSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
             @Override
             public void onLocationChange(GeckoSession session, String url,
@@ -137,8 +160,14 @@ public class ErtoWebViewPlugin extends Plugin {
                 lastLoadedUrl = url == null ? "" : url;
                 emitPageState(lastLoadedUrl, "", false);
             }
-            @Override public void onCanGoBack(GeckoSession session, boolean canGoBack) { emitPageState(lastLoadedUrl, "", false); }
-            @Override public void onCanGoForward(GeckoSession session, boolean canGoForward) { emitPageState(lastLoadedUrl, "", false); }
+            @Override public void onCanGoBack(GeckoSession session, boolean value) {
+                canGoBack = value;
+                emitPageState(lastLoadedUrl, "", false);
+            }
+            @Override public void onCanGoForward(GeckoSession session, boolean value) {
+                canGoForward = value;
+                emitPageState(lastLoadedUrl, "", false);
+            }
         });
         browserSession.setProgressDelegate(new GeckoSession.ProgressDelegate() {
             @Override public void onPageStart(GeckoSession session, String url) {
@@ -221,10 +250,10 @@ public class ErtoWebViewPlugin extends Plugin {
         getActivity().runOnUiThread(() -> { if (browserView != null) browserView.setVisibility(View.GONE); call.resolve(); });
     }
     @PluginMethod public void goBack(PluginCall call) {
-        getActivity().runOnUiThread(() -> { if (browserSession != null && browserSession.canGoBack()) browserSession.goBack(); call.resolve(); });
+        getActivity().runOnUiThread(() -> { if (browserSession != null && canGoBack) browserSession.goBack(); call.resolve(); });
     }
     @PluginMethod public void goForward(PluginCall call) {
-        getActivity().runOnUiThread(() -> { if (browserSession != null && browserSession.canGoForward()) browserSession.goForward(); call.resolve(); });
+        getActivity().runOnUiThread(() -> { if (browserSession != null && canGoForward) browserSession.goForward(); call.resolve(); });
     }
     @PluginMethod public void reload(PluginCall call) {
         getActivity().runOnUiThread(() -> { if (browserSession != null) browserSession.reload(); call.resolve(); });
@@ -255,7 +284,7 @@ public class ErtoWebViewPlugin extends Plugin {
                 result.put("status", status);
                 result.put("text", body.toString());
                 call.resolve(result);
-            } catch (Throwable error) { call.reject("Gagal mengambil halaman", error); }
+            } catch (Throwable error) { call.reject("Gagal mengambil halaman", error.toString()); }
             finally { if (conn != null) conn.disconnect(); }
         });
     }
