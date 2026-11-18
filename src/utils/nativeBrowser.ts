@@ -8,6 +8,17 @@ export interface ErtoPageState {
   loading: boolean;
 }
 
+export interface NativeExtensionSummary {
+  runtimeId: string;
+  name: string;
+  description: string;
+  version: string;
+  enabled: boolean;
+  xpiUrl: string;
+  amoPageUrl: string;
+  catalogId?: string;
+}
+
 interface ErtoWebViewPluginInterface {
   open(options: {
     url: string;
@@ -28,6 +39,10 @@ interface ErtoWebViewPluginInterface {
   goForward(): Promise<void>;
   reload(): Promise<void>;
   fetchText(options: { url: string }): Promise<{ status: number; text: string }>;
+  listExtensions(): Promise<{ extensions: NativeExtensionSummary[] }>;
+  installExtension(options: { catalogId: string; xpiUrl: string }): Promise<NativeExtensionSummary>;
+  setExtensionEnabled(options: { runtimeId: string; enabled: boolean }): Promise<NativeExtensionSummary>;
+  removeExtension(options: { runtimeId: string }): Promise<void>;
   addListener(
     eventName: 'pageState',
     listenerFunc: (state: ErtoPageState) => void

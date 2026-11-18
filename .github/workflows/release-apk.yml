@@ -102,9 +102,12 @@ jobs:
             echo "apksigner tidak ditemukan di Android SDK"
             exit 1
           fi
-          "$APKSIGNER" verify --verbose android/app/build/outputs/apk/release/*.apk
+          for APK_FILE in android/app/build/outputs/apk/release/*.apk; do
+            [ -f "$APK_FILE" ] || continue
+            "$APKSIGNER" verify --verbose "$APK_FILE"
+          done
 
-      - name: Rename Release APK
+      - name: Rename Split APKs
         id: apk_meta
         run: |
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
@@ -115,21 +118,28 @@ jobs:
             TAG_NAME="v1.0.${{ github.run_number }}"
           fi
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          APK_SRC="$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
-          if [ -z "$APK_SRC" ]; then
-            echo "APK release tidak ditemukan. Isi folder output:"
+          : > release_files.txt
+          for APK_SRC in android/app/build/outputs/apk/release/*.apk; do
+            [ -f "$APK_SRC" ] || continue
+            APK_BASE="$(basename "$APK_SRC")"
+            ABI="$(printf '%s' "$APK_BASE" | sed -E 's/^app-(.+)-release\.apk$/\1/')"
+            if [ "$ABI" = "$APK_BASE" ]; then ABI="universal"; fi
+            APK_DEST="Erto-Browser-${TAG_NAME}-${ABI}.apk"
+            cp "$APK_SRC" "$APK_DEST"
+            echo "$APK_DEST" >> release_files.txt
+          done
+          if [ ! -s release_files.txt ]; then
+            echo "APK split tidak ditemukan. Isi folder output:"
             find android/app/build/outputs -maxdepth 5 -type f -print || true
             exit 1
           fi
-          APK_DEST="Erto-Browser-${TAG_NAME}.apk"
-          cp "$APK_SRC" "$APK_DEST"
-          echo "apk_file=$APK_DEST" >> "$GITHUB_OUTPUT"
+          echo "apk_files=$(paste -sd ' ' release_files.txt)" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK Artifact
+      - name: Upload Split APKs Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: erto-browser-apk
-          path: ${{ steps.apk_meta.outputs.apk_file }}
+          name: erto-browser-apks
+          path: Erto-Browser-*.apk
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -137,13 +147,13 @@ jobs:
           tag_name: ${{ steps.apk_meta.outputs.tag_name }}
           name: "Erto Browser ${{ steps.apk_meta.outputs.tag_name }}"
           body: |
-            Rilis resmi **Erto Browser Android APK** (`com.erto.browser`).
+            Rilis resmi **Erto Browser Android APK** (`com.erto.browser`), dipisah per ABI agar ukuran unduhan lebih kecil.
 
             ### Cara Instal di Android:
-            1. Unduh file `.apk` dari daftar **Assets** di bawah.
-            2. Buka file `.apk` di ponsel Android Anda dan izinkan instalasi dari sumber ini.
-            3. Buka **Erto Browser** dan nikmati browsing cepat, ekstensi Chrome, Login Google, serta pemblokir iklan bawaan.
+            1. Unduh `arm64-v8a` untuk hampir semua ponsel modern; pilih `armeabi-v7a` hanya untuk perangkat ARM 32-bit lama.
+            2. Buka APK yang sesuai di ponsel Android dan izinkan instalasi dari sumber ini.
+            3. Buka **Erto Browser**. Katalog memasang add-on AMO/XPI yang kompatibel melalui GeckoView; paket CRX Chrome tidak dapat dipasang langsung.
           files: |
-            ${{ steps.apk_meta.outputs.apk_file }}
+            Erto-Browser-*.apk
           draft: false
           prerelease: false
