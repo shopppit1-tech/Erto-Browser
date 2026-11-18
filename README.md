@@ -29,3 +29,13 @@ docker build -t erto-browser .
 docker run -p 3000:3000 erto-browser
 ```
 Atau hubungkan repositori GitHub ke **Render / Railway / Cloud Run** menggunakan `npm install && npm run build` dan start command `npx tsx server.ts`.
+
+## 4. Build & Rilis Android APK Otomatis di GitHub Releases
+
+Repositori sudah dilengkapi proyek Android (`android/` via Capacitor) dan workflow `.github/workflows/release-apk.yml`.
+
+1. Push repositori ini ke GitHub pada branch `main` (atau buat tag versi baru, misal `git tag v1.0.0 && git push origin v1.0.0`).
+2. Anda juga bisa memicu build manual melalui tab **Actions → Build & Release Android APK → Run workflow**.
+3. Setelah workflow selesai (~2 menit), file **`Erto-Browser-v*.apk`** yang sudah ditandatangani (signed release APK) otomatis tersedia di halaman **Releases** GitHub Anda dan siap diunduh serta diinstal di Android.
+4. *(Opsional)* Jika Anda men-deploy server backend (`Dockerfile`), tambahkan GitHub Repository Variable bernama `ERTO_SERVER_URL` berisi URL server Anda agar APK terhubung ke backend proxy & Chrome Web Store Anda.
+5. *(Opsional)* Untuk tanda tangan rilis tetap di Play Store, tambahkan GitHub Secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, dan `ANDROID_KEY_PASSWORD`. Jika tidak diisi, workflow otomatis membuat keystore rilis sementara yang valid sehingga APK langsung bisa diinstal.

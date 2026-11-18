@@ -189,6 +189,13 @@ function sanitizeAndRewriteHtml(
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
 
   // Live Web Search Endpoint (DuckDuckGo HTML + Wikipedia API)
   app.get('/api/search', async (req, res) => {
@@ -479,9 +486,7 @@ async function startServer() {
     const filename = String(req.query.filename || 'erto-download.html').replace(/[^a-zA-Z0-9._-]/g, '_');
 
     if (!url || !/^https?:\/\//i.test(url)) {
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.send(`Erto Browser Offline Snapshot\nSaved at: ${new Date().toISOString()}\n`);
+      return res.status(400).json({ error: 'URL unduhan tidak valid' });
     }
 
     try {
@@ -490,17 +495,409 @@ async function startServer() {
         return res.status(403).send('Forbidden');
       }
       const upstream = await fetch(parsed.toString(), {
+        redirect: 'follow',
         headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/126.0.0.0 Mobile Safari/537.36' },
       });
+      if (!upstream.ok) {
+        return res.status(upstream.status).json({ error: `Server mengembalikan HTTP ${upstream.status}` });
+      }
       const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
       const buf = Buffer.from(await upstream.arrayBuffer());
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', String(buf.length));
+      return res.send(buf);
+    } catch (err) {
+      return res.status(502).json({
+        error: err instanceof Error ? err.message : 'Gagal mengunduh file dari server tujuan',
+      });
+    }
+  });
+
+  // Live Chrome Web Store Search Endpoint
+  app.get('/api/cws-search', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const target = q
+      ? `https://chromewebstore.google.com/search/${encodeURIComponent(q)}`
+      : 'https://chromewebstore.google.com/category/extensions';
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const r = await fetch(target, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+          'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+      clearTimeout(timeout);
+
+      if (!r.ok) {
+        return res.status(502).json({ items: [], error: `Chrome Web Store status ${r.status}` });
+      }
+
+      const html = await r.text();
+      const items: Array<{
+        cwsId: string;
+        name: string;
+        description: string;
+        publisher: string;
+        rating: number;
+        iconUrl: string;
+        storeUrl: string;
+      }> = [];
+
+      const cards = html.split('<div class="Cb7Kte"');
+      for (let i = 1; i < cards.length && items.length < 18; i++) {
+        const chunk = cards[i].slice(0, 4500);
+        const idMatch = chunk.match(/data-item-id="([a-p]{32})"/);
+        const hrefMatch = chunk.match(/href="\.\/detail\/([^"]+)"/);
+        const titleMatch = chunk.match(/<h2 class="CiI2if">([\s\S]*?)<\/h2>/);
+        const imgMatch = chunk.match(/<img[^>]+src="(https:\/\/lh3\.googleusercontent\.com\/[^"]+)"/);
+        const pubMatch = chunk.match(/<span class="cJI8ee[^"]*">([\s\S]*?)<\/span>/);
+        const ratingMatch = chunk.match(/<span class="Vq0ZA">([0-9.]+)<\/span>/);
+        const descMatch = chunk.match(/<p class="g3IrHd"[^>]*>([\s\S]*?)<\/p>/);
+
+        if (idMatch && titleMatch) {
+          const cwsId = idMatch[1];
+          const name = stripTags(titleMatch[1]);
+          const description = descMatch ? stripTags(descMatch[1]) : 'Ekstensi resmi dari Chrome Web Store.';
+          const publisher = pubMatch ? stripTags(pubMatch[1]) : 'Chrome Web Store';
+          const rating = ratingMatch ? parseFloat(ratingMatch[1]) || 4.5 : 4.5;
+          const iconUrl = imgMatch ? decodeHtmlEntities(imgMatch[1]) : '';
+          const storeUrl = hrefMatch
+            ? `https://chromewebstore.google.com/detail/${hrefMatch[1]}`
+            : `https://chromewebstore.google.com/detail/${cwsId}`;
+
+          if (!items.some((x) => x.cwsId === cwsId)) {
+            items.push({ cwsId, name, description, publisher, rating, iconUrl, storeUrl });
+          }
+        }
+      }
+
+      return res.json({ query: q, live: true, items });
+    } catch (err) {
+      return res.status(502).json({
+        query: q,
+        live: false,
+        items: [],
+        error: err instanceof Error ? err.message : 'Gagal menghubungi Chrome Web Store',
+      });
+    }
+  });
+
+  // Real Google CRX Extension Binary Download Proxy
+  app.get('/api/cws-crx', async (req, res) => {
+    const id = String(req.query.id || '').trim();
+    const name = String(req.query.name || 'extension').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    if (!/^[a-p]{32}$/.test(id)) {
+      return res.status(400).json({ error: 'ID Ekstensi Chrome tidak valid' });
+    }
+
+    const crxUrl = `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=126.0&acceptformat=crx2,crx3&x=id%3D${id}%26uc`;
+    try {
+      const upstream = await fetch(crxUrl, {
+        redirect: 'follow',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        },
+      });
+      if (!upstream.ok) {
+        return res.status(502).json({ error: `Gagal mengunduh .crx (${upstream.status})` });
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader('Content-Disposition', `attachment; filename="${name}-${id.slice(0, 8)}.crx"`);
+      res.setHeader('Content-Type', 'application/x-chrome-extension');
       return res.send(buf);
     } catch {
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.send(`Erto Browser Download Record\nSource: ${url}\nDate: ${new Date().toISOString()}\n`);
+      return res.status(502).json({ error: 'Gagal menghubungi server CRX Google' });
+    }
+  });
+
+  // Full Reverse-Proxy Frame Renderer (renders real websites directly inside Erto Browser iframe)
+  app.get('/api/frame', async (req, res) => {
+    let targetUrl = String(req.query.url || '').trim();
+    const adblock = req.query.adblock !== '0';
+    const dark = req.query.dark === '1';
+    const desktop = req.query.desktop === '1';
+
+    if (!targetUrl) return res.status(400).send('URL kosong');
+    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = `https://${targetUrl}`;
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(targetUrl);
+    } catch {
+      return res.status(400).send('Format URL tidak valid');
+    }
+
+    if (isBlockedHost(parsedUrl.hostname)) {
+      return res.status(403).send('Akses alamat lokal dibatasi');
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 9000);
+      const userAgent = desktop
+        ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+        : 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+
+      const upstream = await fetch(parsedUrl.toString(), {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: {
+          'User-Agent': userAgent,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+      clearTimeout(timeout);
+
+      const finalUrl = upstream.url || parsedUrl.toString();
+      const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+
+      if (!upstream.ok && upstream.status >= 400) {
+        throw new Error(`HTTP ${upstream.status}`);
+      }
+
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        const buf = Buffer.from(await upstream.arrayBuffer());
+        res.setHeader('Content-Type', contentType);
+        return res.send(buf);
+      }
+
+      let html = await upstream.text();
+
+      // Strip CSP meta tags & frame-busters
+      html = html.replace(/<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, '');
+
+      // Strip ad/tracker scripts when adblock is enabled
+      if (adblock) {
+        html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs) => {
+          const lower = (attrs + full).toLowerCase();
+          if (AD_PATTERNS.some((p) => lower.includes(p))) {
+            return '';
+          }
+          return full;
+        });
+      }
+
+      const darkCss = dark
+        ? `<style id="erto-dark-reader">
+            html { filter: invert(0.92) hue-rotate(180deg) !important; background: #0b1220 !important; }
+            img, video, picture, canvas, [style*="background-image"] { filter: invert(1) hue-rotate(180deg) !important; }
+          </style>`
+        : '';
+
+      const navBridge = `<base href="${finalUrl.replace(/"/g, '&quot;')}">
+        ${darkCss}
+        <script>
+          (function(){
+            var baseHref = ${JSON.stringify(finalUrl)};
+            function notifyParent(url, title) {
+              try { window.parent.postMessage({ type: 'erto-navigate', url: url, title: title || document.title }, '*'); } catch(e){}
+            }
+            window.addEventListener('DOMContentLoaded', function() {
+              try { window.parent.postMessage({ type: 'erto-loaded', url: baseHref, title: document.title }, '*'); } catch(e){}
+            });
+            document.addEventListener('click', function(e) {
+              var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+              if (!a) return;
+              var raw = a.getAttribute('href') || '';
+              if (!raw || raw.startsWith('#') || raw.startsWith('javascript:')) return;
+              try {
+                var abs = new URL(raw, baseHref).toString();
+                if (/^https?:/i.test(abs)) {
+                  e.preventDefault();
+                  notifyParent(abs, a.textContent ? a.textContent.trim().slice(0, 80) : abs);
+                }
+              } catch(err){}
+            }, true);
+            document.addEventListener('submit', function(e) {
+              var form = e.target;
+              if (!form || !form.action) return;
+              if ((form.method || 'get').toLowerCase() === 'get') {
+                e.preventDefault();
+                try {
+                  var u = new URL(form.action, baseHref);
+                  var fd = new FormData(form);
+                  fd.forEach(function(val, key){ u.searchParams.set(key, String(val)); });
+                  notifyParent(u.toString(), document.title);
+                } catch(err){}
+              }
+            }, true);
+          })();
+        </script>`;
+
+      if (/<head[^>]*>/i.test(html)) {
+        html = html.replace(/<head[^>]*>/i, (match) => `${match}\n${navBridge}`);
+      } else {
+        html = `<head>${navBridge}</head>${html}`;
+      }
+
+      res.removeHeader('X-Frame-Options');
+      res.removeHeader('Content-Security-Policy');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    } catch {
+      // Clean in-app reader/search fallback inside the frame (never kicks user out)
+      const domain = parsedUrl.hostname.replace(/^www\./, '');
+      let ddgLinks: Array<{ title: string; url: string; snippet: string }> = [];
+      try {
+        const sr = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(domain)}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/126.0.0.0 Mobile Safari/537.36' },
+        });
+        if (sr.ok) {
+          const srHtml = await sr.text();
+          const rx = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>|<div[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/div>)?/gi;
+          let m: RegExpExecArray | null;
+          while ((m = rx.exec(srHtml)) !== null && ddgLinks.length < 8) {
+            let u = m[1];
+            if (u.includes('uddg=')) {
+              try {
+                u = decodeURIComponent(new URL(u.startsWith('//') ? `https:${u}` : u).searchParams.get('uddg') || u);
+              } catch {}
+            }
+            if (u.startsWith('http')) {
+              ddgLinks.push({
+                title: stripTags(m[2]),
+                url: u,
+                snippet: stripTags(m[3] || m[4] || ''),
+              });
+            }
+          }
+        }
+      } catch {}
+
+      const bg = dark ? '#0b1220' : '#f8fafc';
+      const card = dark ? '#111827' : '#ffffff';
+      const fg = dark ? '#f1f5f9' : '#0f172a';
+      const muted = dark ? '#94a3b8' : '#475569';
+      const linkColor = dark ? '#4ade80' : '#15803d';
+
+      return res.send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>
+          body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;background:${bg};color:${fg};}
+          .box{max-width:680px;margin:0 auto;background:${card};border-radius:16px;padding:18px;box-shadow:0 4px 16px rgba(0,0,0,0.08);}
+          h2{margin:0 0 6px;font-size:18px;} p{margin:0 0 12px;font-size:13px;color:${muted};}
+          .item{padding:12px 0;border-top:1px solid rgba(148,163,184,0.2);}
+          a{color:${linkColor};font-weight:700;text-decoration:none;font-size:14px;display:block;margin-bottom:4px;}
+          .snip{font-size:12px;color:${muted};}
+        </style>
+        <script>
+          function go(u, t){ window.parent.postMessage({type:'erto-navigate', url:u, title:t}, '*'); }
+        </script></head><body>
+        <div class="box">
+          <h2>${domain}</h2>
+          <p>Menampilkan halaman & tautan terkait ${domain} di dalam Erto Browser.</p>
+          ${ddgLinks
+            .map(
+              (item) => `<div class="item">
+                <a href="${item.url}" onclick="event.preventDefault();go(${JSON.stringify(item.url)}, ${JSON.stringify(item.title)})">${item.title}</a>
+                <div class="snip">${item.snippet}</div>
+              </div>`
+            )
+            .join('')}
+        </div></body></html>`);
+    }
+  });
+
+  // Live YouTube Video Search & Trending Feed Endpoint
+  app.get('/api/youtube', async (req, res) => {
+    const q = String(req.query.q || '').trim() || 'trending indonesia';
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const r = await fetch(
+        `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+        {
+          signal: controller.signal,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8',
+          },
+        }
+      );
+      clearTimeout(timeout);
+      const html = await r.text();
+      const videos: Array<{
+        videoId: string;
+        title: string;
+        channel: string;
+        views: string;
+        duration: string;
+        thumbnail: string;
+      }> = [];
+
+      const rx = /"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"[\s\S]*?"title":\{"runs":\[\{"text":"((?:\\.|[^"\\])*)"\}/g;
+      let m: RegExpExecArray | null;
+      const seen = new Set<string>();
+      while ((m = rx.exec(html)) !== null && videos.length < 12) {
+        const videoId = m[1];
+        if (seen.has(videoId)) continue;
+        seen.add(videoId);
+        let title = m[2];
+        try {
+          title = JSON.parse(`"${title}"`);
+        } catch {}
+        const windowSlice = html.slice(m.index, m.index + 2400);
+        const chanMatch = windowSlice.match(/"ownerText":\{"runs":\[\{"text":"((?:\\.|[^"\\])*)"/);
+        const lenMatch = windowSlice.match(/"lengthText":\{[^}]*"simpleText":"([^"]+)"/);
+        const viewMatch = windowSlice.match(/"shortViewCountText":\{[^}]*"simpleText":"([^"]+)"/);
+        let channel = 'YouTube';
+        if (chanMatch) {
+          try {
+            channel = JSON.parse(`"${chanMatch[1]}"`);
+          } catch {
+            channel = chanMatch[1];
+          }
+        }
+        videos.push({
+          videoId,
+          title,
+          channel,
+          duration: lenMatch ? lenMatch[1] : '',
+          views: viewMatch ? viewMatch[1] : '',
+          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        });
+      }
+
+      return res.json({ query: q, videos });
+    } catch {
+      return res.json({ query: q, videos: [] });
+    }
+  });
+
+  // Real SponsorBlock Public API Proxy for YouTube Sponsor Segment Detection
+  app.get('/api/sponsorblock', async (req, res) => {
+    const videoId = String(req.query.videoId || '').trim();
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      return res.json({ segments: [] });
+    }
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const r = await fetch(
+        `https://sponsor.ajay.app/api/skipSegments?videoID=${encodeURIComponent(videoId)}`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timeout);
+      if (!r.ok) return res.json({ segments: [] });
+      const data = await r.json();
+      if (!Array.isArray(data)) return res.json({ segments: [] });
+      return res.json({
+        segments: data.map((s: { category?: string; segment?: [number, number] }) => ({
+          category: s.category || 'sponsor',
+          segment: Array.isArray(s.segment) ? s.segment : [0, 0],
+        })),
+      });
+    } catch {
+      return res.json({ segments: [] });
     }
   });
 

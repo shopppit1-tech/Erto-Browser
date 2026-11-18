@@ -1,0 +1,125 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag rilis APK (opsional, mis. v1.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Signed Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets
+        env:
+          VITE_API_BASE_URL: ${{ vars.ERTO_SERVER_URL || '' }}
+        run: npm run build
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Prepare Android Release Keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'ertobrowser123' }}
+          ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
+          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'ertobrowser123' }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          else
+            keytool -genkeypair -v \
+              -keystore android/app/release.keystore \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias "$ERTO_KEY_ALIAS" \
+              -storepass "$ERTO_KEYSTORE_PASSWORD" \
+              -keypass "$ERTO_KEY_PASSWORD" \
+              -dname "CN=Erto Browser, OU=Mobile, O=Erto, L=Jakarta, S=ID, C=ID"
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Android Release APK
+        working-directory: android
+        env:
+          ERTO_KEYSTORE_PATH: release.keystore
+          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'ertobrowser123' }}
+          ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
+          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'ertobrowser123' }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Rename Release APK
+        id: apk_meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.version_tag }}" ]; then
+            TAG_NAME="${{ inputs.version_tag }}"
+          else
+            TAG_NAME="v1.0.${{ github.run_number }}"
+          fi
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          APK_SRC="android/app/build/outputs/apk/release/app-release.apk"
+          APK_DEST="Erto-Browser-${TAG_NAME}.apk"
+          cp "$APK_SRC" "$APK_DEST"
+          echo "apk_file=$APK_DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: erto-browser-apk
+          path: ${{ steps.apk_meta.outputs.apk_file }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.apk_meta.outputs.tag_name }}
+          name: "Erto Browser ${{ steps.apk_meta.outputs.tag_name }}"
+          body: |
+            Rilis resmi **Erto Browser Android APK** (`com.erto.browser`).
+
+            ### Cara Instal di Android:
+            1. Unduh file `.apk` dari daftar **Assets** di bawah.
+            2. Buka file `.apk` di ponsel Android Anda dan izinkan instalasi dari sumber ini.
+            3. Buka **Erto Browser** dan nikmati browsing cepat, ekstensi Chrome, Login Google, serta pemblokir iklan bawaan.
+          files: |
+            ${{ steps.apk_meta.outputs.apk_file }}
+          draft: false
+          prerelease: false

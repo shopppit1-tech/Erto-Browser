@@ -157,7 +157,28 @@ export function SiteBrandTile({
   }
 }
 
-export function ExtensionIconTile({ iconKey }: { iconKey: string }) {
+export function ExtensionIconTile({
+  iconKey,
+  iconUrl,
+  alt = 'Ikon Ekstensi',
+}: {
+  iconKey: string;
+  iconUrl?: string;
+  alt?: string;
+}) {
+  if (iconUrl) {
+    return (
+      <div className="w-13 h-13 rounded-xl bg-white border border-slate-100 overflow-hidden flex items-center justify-center shrink-0 shadow-xs">
+        <img
+          src={iconUrl}
+          alt={alt}
+          referrerPolicy="no-referrer"
+          className="w-full h-full object-cover"
+        />
+      </div>
+    );
+  }
+
   switch (iconKey) {
     case 'google-translate':
       return (

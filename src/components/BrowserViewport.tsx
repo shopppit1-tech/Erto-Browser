@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Home,
   ArrowLeft,
@@ -13,12 +13,15 @@ import {
   Languages,
   Moon,
   Monitor,
-  ExternalLink,
   Search,
-  AlertCircle,
   EyeOff,
+  Play,
+  User as UserIcon,
 } from 'lucide-react';
+import type { User } from 'firebase/auth';
 import { BrowserSettings, BrowserTab, ExtensionItem } from '../types/browser';
+import { apiUrl } from '../utils/api';
+import { GoogleGLogo } from './BrandIcons';
 
 interface SearchResult {
   title: string;
@@ -28,20 +31,13 @@ interface SearchResult {
   source: string;
 }
 
-interface BrowsePayload {
-  url: string;
-  finalUrl: string;
-  domain: string;
+interface YouTubeVideoItem {
+  videoId: string;
   title: string;
-  description: string;
-  favicon: string;
-  blockedCount: number;
-  youtubeEmbedId?: string;
-  restricted?: boolean;
-  status: number;
-  bodyHtml: string;
-  links: { text: string; url: string }[];
-  error?: string;
+  channel: string;
+  views: string;
+  duration: string;
+  thumbnail: string;
 }
 
 interface BrowserViewportProps {
@@ -50,6 +46,8 @@ interface BrowserViewportProps {
   extensions: ExtensionItem[];
   settings: BrowserSettings;
   isBookmarked: boolean;
+  user: User | null;
+  onGoogleLogin: () => void;
   onGoHome: () => void;
   onNavigate: (input: string) => void;
   onGoBack: () => void;
@@ -63,12 +61,54 @@ interface BrowserViewportProps {
   onToggleDesktopMode: () => void;
 }
 
+function getSpecialMode(url: string): 'search' | 'google-home' | 'youtube-home' | 'youtube-video' | 'web' {
+  if (url.startsWith('erto://search')) return 'search';
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (host === 'google.com' || host === 'google.co.id') {
+      if ((u.pathname === '/' || u.pathname === '') && !u.searchParams.get('q')) {
+        return 'google-home';
+      }
+      if (u.searchParams.get('q')) return 'search';
+    }
+    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be') {
+      if (u.searchParams.get('v') || host === 'youtu.be' || u.pathname.includes('/shorts/')) {
+        return 'youtube-video';
+      }
+      return 'youtube-home';
+    }
+  } catch {
+    // ignore
+  }
+  return 'web';
+}
+
+function extractYouTubeId(urlStr: string): string | null {
+  try {
+    const u = new URL(urlStr);
+    if (u.hostname.includes('youtu.be')) return u.pathname.slice(1).split('/')[0] || null;
+    if (u.hostname.includes('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      const parts = u.pathname.split('/');
+      const idx = parts.findIndex((p) => p === 'embed' || p === 'shorts');
+      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function BrowserViewport({
   tab,
   tabCount,
   extensions,
   settings,
   isBookmarked,
+  user,
+  onGoogleLogin,
   onGoHome,
   onNavigate,
   onGoBack,
@@ -84,13 +124,16 @@ export function BrowserViewport({
   const [addressInput, setAddressInput] = useState(tab.query || tab.url);
   const [loading, setLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
-  const [pageData, setPageData] = useState<BrowsePayload | null>(null);
-  const [translatedHtml, setTranslatedHtml] = useState<string | null>(null);
+  const [googleInput, setGoogleInput] = useState('');
+  const [ytQuery, setYtQuery] = useState('');
+  const [ytVideos, setYtVideos] = useState<YouTubeVideoItem[]>([]);
+  const [activeYtVideo, setActiveYtVideo] = useState<YouTubeVideoItem | null>(null);
+  const [translatedBody, setTranslatedBody] = useState<{ title: string; html: string } | null>(null);
   const [translating, setTranslating] = useState(false);
   const [translateLang, setTranslateLang] = useState<'id' | 'en'>('id');
   const [reloadNonce, setReloadNonce] = useState(0);
-
-  const contentRef = useRef<HTMLDivElement>(null);
+  const [pageTitle, setPageTitle] = useState(tab.title);
+  const [sponsorSegments, setSponsorSegments] = useState<Array<{ category: string; segment: [number, number] }>>([]);
 
   const isExtensionActive = useCallback(
     (id: string) => {
@@ -104,208 +147,212 @@ export function BrowserViewport({
     settings.adShieldBuiltIn || isExtensionActive('ublock-origin') || isExtensionActive('adblock');
   const darkReaderActive = settings.forceDarkWeb || isExtensionActive('dark-reader');
   const translateExtActive = isExtensionActive('google-translate');
+  const sponsorBlockActive = isExtensionActive('sponsorblock');
   const activeExtCount = extensions.filter((e) => e.installed && e.enabled).length;
 
+  const mode = getSpecialMode(tab.url);
+
+  // Sync address bar & listen to iframe navigation messages
   useEffect(() => {
     setAddressInput(tab.url.startsWith('erto://search') ? tab.query || '' : tab.url);
-    setTranslatedHtml(null);
-  }, [tab.url, tab.query]);
+    setPageTitle(tab.title);
+    setTranslatedBody(null);
+  }, [tab.url, tab.query, tab.title]);
 
   useEffect(() => {
-    let cancelled = false;
-    async function loadContent() {
-      setLoading(true);
-      setTranslatedHtml(null);
+    const onMessage = (ev: MessageEvent) => {
+      if (!ev.data || typeof ev.data !== 'object') return;
+      if (ev.data.type === 'erto-navigate' && typeof ev.data.url === 'string') {
+        onNavigate(ev.data.url);
+      } else if (ev.data.type === 'erto-loaded') {
+        setLoading(false);
+        if (typeof ev.data.title === 'string' && ev.data.title.trim()) {
+          setPageTitle(ev.data.title.trim());
+          onRecordHistory(ev.data.title.trim(), tab.url);
+        }
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onNavigate, onRecordHistory, tab.url]);
 
-      if (tab.url.startsWith('erto://search')) {
-        setPageData(null);
-        const q = tab.query || '';
+  // Load search / YouTube / iframe content
+  useEffect(() => {
+    let cancelled = false;
+    setTranslatedBody(null);
+
+    if (mode === 'search') {
+      setLoading(true);
+      let q = tab.query || '';
+      if (!q && tab.url.includes('q=')) {
         try {
-          const res = await fetch(
-            `/api/search?q=${encodeURIComponent(q)}&engine=${encodeURIComponent(settings.searchEngine)}`
-          );
-          if (!res.ok) throw new Error('Backend search unavailable');
-          const data = await res.json();
+          q = new URL(tab.url).searchParams.get('q') || '';
+        } catch {}
+      }
+      fetch(apiUrl(`/api/search?q=${encodeURIComponent(q)}&engine=${encodeURIComponent(settings.searchEngine)}`))
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data) => {
           if (!cancelled) {
             setSearchResults(data.results || []);
             onRecordHistory(`Cari: ${q}`, tab.url);
           }
-        } catch {
-          // Client-side CORS fallback for static hosting (e.g. GitHub Pages)
-          const fallbackResults: SearchResult[] = [];
+        })
+        .catch(async () => {
+          const fallback: SearchResult[] = [];
           try {
-            const wikiRes = await fetch(
+            const wr = await fetch(
               `https://id.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(q)}&limit=5&namespace=0&format=json&origin=*`
             );
-            if (wikiRes.ok) {
-              const wikiData = await wikiRes.json();
-              if (Array.isArray(wikiData) && Array.isArray(wikiData[1])) {
-                wikiData[1].forEach((title: string, idx: number) => {
-                  const url = wikiData[3]?.[idx];
-                  if (url) {
-                    fallbackResults.push({
-                      title: `${title} — Wikipedia`,
-                      url,
+            if (wr.ok) {
+              const wd = await wr.json();
+              if (Array.isArray(wd?.[1])) {
+                wd[1].forEach((t: string, idx: number) => {
+                  if (wd[3]?.[idx]) {
+                    fallback.push({
+                      title: `${t} — Wikipedia`,
+                      url: wd[3][idx],
                       domain: 'id.wikipedia.org',
-                      snippet: wikiData[2]?.[idx] || `Artikel Wikipedia tentang ${title}.`,
+                      snippet: wd[2]?.[idx] || '',
                       source: 'Wikipedia',
                     });
                   }
                 });
               }
             }
-          } catch {
-            // ignore
-          }
-          fallbackResults.push(
-            {
-              title: `Cari "${q}" di Google`,
-              url: `https://www.google.com/search?q=${encodeURIComponent(q)}`,
-              domain: 'google.com',
-              snippet: `Buka hasil pencarian Google untuk "${q}".`,
-              source: 'Google',
-            },
-            {
-              title: `Cari "${q}" di YouTube`,
-              url: `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
-              domain: 'youtube.com',
-              snippet: `Tonton video terkait "${q}" di YouTube.`,
-              source: 'YouTube',
-            }
-          );
-          if (!cancelled) {
-            setSearchResults(fallbackResults);
-            onRecordHistory(`Cari: ${q}`, tab.url);
-          }
-        } finally {
+          } catch {}
+          if (!cancelled) setSearchResults(fallback);
+        })
+        .finally(() => {
           if (!cancelled) setLoading(false);
-        }
-        return;
-      }
-
-      setSearchResults(null);
-      try {
-        const res = await fetch(
-          `/api/browse?url=${encodeURIComponent(tab.url)}&adblock=${adBlockActive ? '1' : '0'}&desktop=${
-            tab.desktopMode ? '1' : '0'
-          }`
-        );
-        if (!res.ok) throw new Error('Backend proxy unavailable');
-        const data: BrowsePayload = await res.json();
-        if (!cancelled) {
-          setPageData(data);
-          if (data.title) {
-            onRecordHistory(data.title, data.finalUrl || tab.url);
-          }
-        }
-      } catch {
-        // Static hosting fallback: render Wikipedia summaries via CORS-enabled API or direct link card
-        let fallbackPayload: BrowsePayload = {
-          url: tab.url,
-          finalUrl: tab.url,
-          domain: tab.url,
-          title: tab.title || tab.url,
-          description: 'Mode statis aktif: ketuk "Buka Tautan Langsung" untuk membuka situs di tab browser perangkat Anda.',
-          favicon: '',
-          blockedCount: 0,
-          restricted: true,
-          status: 200,
-          bodyHtml: '',
-          links: [],
-        };
-        try {
-          const parsed = new URL(tab.url);
-          fallbackPayload.domain = parsed.hostname;
-          if (parsed.hostname.includes('wikipedia.org')) {
-            const slug = parsed.pathname.split('/wiki/')[1];
-            if (slug) {
-              const lang = parsed.hostname.split('.')[0] || 'id';
-              const summaryRes = await fetch(
-                `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(decodeURIComponent(slug))}`
-              );
-              if (summaryRes.ok) {
-                const s = await summaryRes.json();
-                fallbackPayload = {
-                  url: tab.url,
-                  finalUrl: tab.url,
-                  domain: parsed.hostname,
-                  title: s.title || parsed.hostname,
-                  description: s.description || '',
-                  favicon: '',
-                  blockedCount: adBlockActive ? 2 : 0,
-                  restricted: false,
-                  status: 200,
-                  bodyHtml: `${s.thumbnail?.source ? `<img src="${s.thumbnail.source}" alt="${s.title}" />` : ''}<p>${s.extract || ''}</p>`,
-                  links: [],
-                };
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
-        if (!cancelled) {
-          setPageData(fallbackPayload);
-          onRecordHistory(fallbackPayload.title, tab.url);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+        });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    loadContent();
+    if (mode === 'youtube-home' || mode === 'youtube-video') {
+      setSearchResults(null);
+      setLoading(true);
+      const vid = extractYouTubeId(tab.url);
+      if (vid) {
+        setActiveYtVideo({
+          videoId: vid,
+          title: tab.title || 'YouTube Video',
+          channel: 'YouTube',
+          views: '',
+          duration: '',
+          thumbnail: `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
+        });
+      } else {
+        setActiveYtVideo(null);
+      }
+
+      let q = '';
+      try {
+        q = new URL(tab.url).searchParams.get('search_query') || '';
+      } catch {}
+      setYtQuery(q);
+
+      fetch(apiUrl(`/api/youtube?q=${encodeURIComponent(q || 'trending indonesia')}`))
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data) => {
+          if (!cancelled) {
+            setYtVideos(data.videos || []);
+            onRecordHistory(q ? `YouTube: ${q}` : 'YouTube', tab.url);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setYtVideos([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (mode === 'google-home') {
+      setSearchResults(null);
+      setLoading(false);
+      onRecordHistory('Google', tab.url);
+      return;
+    }
+
+    // Standard full web reverse-proxy frame
+    setSearchResults(null);
+    setLoading(true);
+    onRecordHistory(tab.title || tab.url, tab.url);
+    const timer = setTimeout(() => {
+      if (!cancelled) setLoading(false);
+    }, 3500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.url, tab.query, mode, reloadNonce]);
+
+  useEffect(() => {
+    if (!sponsorBlockActive || !activeYtVideo?.videoId) {
+      setSponsorSegments([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(apiUrl(`/api/sponsorblock?videoId=${encodeURIComponent(activeYtVideo.videoId)}`))
+      .then((r) => (r.ok ? r.json() : { segments: [] }))
+      .then((d) => {
+        if (!cancelled) setSponsorSegments(Array.isArray(d.segments) ? d.segments : []);
+      })
+      .catch(() => {
+        if (!cancelled) setSponsorSegments([]);
+      });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.url, tab.query, tab.desktopMode, adBlockActive, reloadNonce]);
+  }, [sponsorBlockActive, activeYtVideo?.videoId]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmitAddress = (e: React.FormEvent) => {
     e.preventDefault();
     if (!addressInput.trim()) return;
     onNavigate(addressInput.trim());
   };
 
-  const handleContentClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const anchor = (e.target as HTMLElement).closest('a');
-    if (anchor) {
-      const href = anchor.getAttribute('href');
-      if (href && href.startsWith('http')) {
-        e.preventDefault();
-        onNavigate(href);
-      }
-    }
-  };
-
-  const handleTranslatePage = async (target: 'id' | 'en') => {
-    if (!pageData?.bodyHtml || translating) return;
-    setTranslateLang(target);
+  const handleTranslateActivePage = async (targetLang: 'id' | 'en') => {
+    if (translating) return;
+    setTranslateLang(targetLang);
     setTranslating(true);
     try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(pageData.bodyHtml, 'text/html');
-      const nodes = Array.from(doc.querySelectorAll('h1, h2, h3, p, li')).slice(0, 24);
-      const texts = nodes.map((n) => (n.textContent || '').trim()).filter((t) => t.length > 3);
-      if (texts.length === 0) {
+      const browseRes = await fetch(
+        apiUrl(`/api/browse?url=${encodeURIComponent(tab.url)}&adblock=${adBlockActive ? '1' : '0'}`)
+      );
+      const data = await browseRes.json();
+      if (!data.bodyHtml) {
         setTranslating(false);
         return;
       }
-      const res = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts, targetLang: target }),
-      });
-      const data = await res.json();
-      const translated: string[] = data.translations || [];
-      let idx = 0;
-      nodes.forEach((n) => {
-        const orig = (n.textContent || '').trim();
-        if (orig.length > 3 && translated[idx]) {
-          n.textContent = translated[idx];
-          idx += 1;
-        }
-      });
-      setTranslatedHtml(doc.body.innerHTML);
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(data.bodyHtml, 'text/html');
+      const nodes = Array.from(doc.querySelectorAll('h1, h2, h3, p, li')).slice(0, 24);
+      const texts = nodes.map((n) => (n.textContent || '').trim()).filter((t) => t.length > 3);
+      if (texts.length > 0) {
+        const trRes = await fetch(apiUrl('/api/translate'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ texts, targetLang }),
+        });
+        const trData = await trRes.json();
+        const translated: string[] = trData.translations || [];
+        let idx = 0;
+        nodes.forEach((n) => {
+          const orig = (n.textContent || '').trim();
+          if (orig.length > 3 && translated[idx]) {
+            n.textContent = translated[idx];
+            idx += 1;
+          }
+        });
+      }
+      setTranslatedBody({ title: data.title || pageTitle, html: doc.body.innerHTML });
     } catch {
       // ignore
     } finally {
@@ -313,18 +360,13 @@ export function BrowserViewport({
     }
   };
 
-  const textSizeClass =
-    settings.textSize === 'kecil'
-      ? 'text-[13px]'
-      : settings.textSize === 'besar'
-      ? 'text-[17px]'
-      : 'text-[15px]';
-
   const canGoBack = tab.historyIndex > 0;
   const canGoForward = tab.historyIndex < tab.historyStack.length - 1;
-  const displayTitle = searchResults
-    ? `Hasil Pencarian: ${tab.query}`
-    : pageData?.title || tab.title;
+  const frameSrc = apiUrl(
+    `/api/frame?url=${encodeURIComponent(tab.url)}&adblock=${
+      adBlockActive ? '1' : '0'
+    }&dark=${darkReaderActive ? '1' : '0'}&desktop=${tab.desktopMode ? '1' : '0'}&r=${reloadNonce}`
+  );
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900">
@@ -347,7 +389,7 @@ export function BrowserViewport({
           </button>
 
           <form
-            onSubmit={handleSubmit}
+            onSubmit={handleSubmitAddress}
             className="flex-1 min-w-0 bg-white/95 text-slate-900 rounded-full h-10 px-3 flex items-center gap-2 shadow-inner"
           >
             {tab.incognito ? (
@@ -405,7 +447,7 @@ export function BrowserViewport({
           </button>
         </div>
 
-        {/* Active Extensions Strip & Quick Browser Actions */}
+        {/* Active Extensions Strip & Navigation Controls */}
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-2 mt-1.5 px-1 text-[11px] overflow-x-auto no-scrollbar">
           <div className="flex items-center gap-3 shrink-0">
             <button
@@ -427,9 +469,9 @@ export function BrowserViewport({
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
             {adBlockActive && (
-              <span className="inline-flex items-center gap-1 text-[#a3e635] font-semibold tabular-nums">
+              <span className="inline-flex items-center gap-1 text-[#a3e635] font-semibold">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                {pageData?.blockedCount || 0} diblokir
+                AdBlock Aktif
               </span>
             )}
             {darkReaderActive && (
@@ -441,20 +483,22 @@ export function BrowserViewport({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {translateExtActive && pageData?.bodyHtml && (
+            {translateExtActive && mode === 'web' && (
               <button
                 type="button"
                 disabled={translating}
-                onClick={() => handleTranslatePage(translateLang === 'id' ? 'en' : 'id')}
+                onClick={() =>
+                  translatedBody
+                    ? setTranslatedBody(null)
+                    : handleTranslateActivePage(translateLang === 'id' ? 'en' : 'id')
+                }
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#a3e635] text-[#052e0d] font-bold hover:bg-[#bef264] transition"
               >
                 <Languages className="w-3.5 h-3.5" />
                 {translating
                   ? 'Menerjemahkan...'
-                  : translatedHtml
-                  ? translateLang === 'id'
-                    ? 'Terjemahan: ID'
-                    : 'Translate: EN'
+                  : translatedBody
+                  ? 'Lihat Asli'
                   : 'Terjemahkan'}
               </button>
             )}
@@ -470,7 +514,7 @@ export function BrowserViewport({
             </button>
             <button
               type="button"
-              onClick={() => onToggleBookmark(displayTitle, tab.url)}
+              onClick={() => onToggleBookmark(pageTitle, tab.url)}
               aria-label="Bookmark Halaman"
               className="p-1 text-white/90 hover:text-[#fde047]"
             >
@@ -480,7 +524,7 @@ export function BrowserViewport({
               type="button"
               onClick={() =>
                 onDownloadPage(
-                  `${(pageData?.domain || 'halaman').replace(/[^a-z0-9.-]/gi, '_')}.html`,
+                  `${(pageTitle || 'halaman').replace(/[^a-z0-9.-]/gi, '_')}.html`,
                   tab.url
                 )
               }
@@ -492,7 +536,6 @@ export function BrowserViewport({
           </div>
         </div>
 
-        {/* Loading Progress Bar */}
         {loading && (
           <div className="h-0.5 w-full bg-emerald-950 overflow-hidden mt-1 rounded-full">
             <div className="h-full w-1/2 bg-[#a3e635] animate-pulse rounded-full" />
@@ -500,172 +543,256 @@ export function BrowserViewport({
         )}
       </header>
 
-      {/* Main Web Content Area */}
+      {/* Main Content Area */}
       <main
-        className={`flex-1 overflow-y-auto transition-colors ${
+        className={`flex-1 flex flex-col overflow-hidden ${
           darkReaderActive ? 'bg-[#0b1220] text-slate-100' : 'bg-white text-slate-900'
         }`}
       >
-        <div className={`max-w-4xl mx-auto p-4 sm:p-6 ${textSizeClass}`}>
-          {/* Search Results View */}
-          {searchResults !== null ? (
-            <div className="space-y-4">
+        {/* 1. In-App Google Homepage (with real Google Login integration!) */}
+        {mode === 'google-home' ? (
+          <div className="flex-1 overflow-y-auto flex flex-col items-center justify-center p-6">
+            <div className="w-full max-w-lg space-y-6 text-center">
+              <div className="flex justify-end">
+                {user ? (
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50 text-slate-800 text-xs font-semibold">
+                    {user.photoURL ? (
+                      <img
+                        src={user.photoURL}
+                        alt={user.displayName || 'Google'}
+                        referrerPolicy="no-referrer"
+                        className="w-6 h-6 rounded-full"
+                      />
+                    ) : (
+                      <UserIcon className="w-4 h-4 text-emerald-700" />
+                    )}
+                    <span className="truncate max-w-[160px]">{user.displayName || user.email}</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onGoogleLogin}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition"
+                  >
+                    <GoogleGLogo className="w-4 h-4 bg-white rounded-full p-0.5" />
+                    <span>Login Google</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="text-4xl sm:text-5xl font-extrabold tracking-tight select-none">
+                <span className="text-[#4285F4]">G</span>
+                <span className="text-[#EA4335]">o</span>
+                <span className="text-[#FBBC05]">o</span>
+                <span className="text-[#4285F4]">g</span>
+                <span className="text-[#34A853]">l</span>
+                <span className="text-[#EA4335]">e</span>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!googleInput.trim()) return;
+                  onNavigate(googleInput.trim());
+                }}
+                className="flex items-center gap-2 rounded-full border border-slate-300 bg-white text-slate-900 px-4 h-12 shadow-sm focus-within:ring-2 focus-within:ring-blue-500"
+              >
+                <Search className="w-5 h-5 text-slate-400 shrink-0" />
+                <input
+                  type="text"
+                  value={googleInput}
+                  onChange={(e) => setGoogleInput(e.target.value)}
+                  placeholder="Telusuri di Google atau ketik URL"
+                  className="flex-1 bg-transparent text-sm outline-none"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 rounded-full bg-blue-600 text-white text-xs font-bold"
+                >
+                  Cari
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : mode === 'youtube-home' || mode === 'youtube-video' ? (
+          /* 2. In-App Real YouTube Video Browser & Inline Player */
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            <div className="max-w-4xl mx-auto space-y-4">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  onNavigate(
+                    `https://www.youtube.com/results?search_query=${encodeURIComponent(
+                      ytQuery.trim() || 'trending indonesia'
+                    )}`
+                  );
+                }}
+                className="flex items-center gap-2"
+              >
+                <div className="flex-1 flex items-center gap-2 rounded-full border border-slate-300 bg-white text-slate-900 px-4 h-11">
+                  <Search className="w-4 h-4 text-red-600 shrink-0" />
+                  <input
+                    type="text"
+                    value={ytQuery}
+                    onChange={(e) => setYtQuery(e.target.value)}
+                    placeholder="Cari video di YouTube..."
+                    className="flex-1 bg-transparent text-sm outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 h-11 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-bold shrink-0"
+                >
+                  Cari
+                </button>
+              </form>
+
+              {activeYtVideo && (
+                <div className="space-y-2">
+                  <div className="aspect-video w-full rounded-2xl overflow-hidden bg-black shadow-lg">
+                    <iframe
+                      title={activeYtVideo.title}
+                      src={`https://www.youtube.com/embed/${activeYtVideo.videoId}?autoplay=1`}
+                      className="w-full h-full border-0"
+                      allow="autoplay; encrypted-media; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                  <h2 className="text-base sm:text-lg font-bold">{activeYtVideo.title}</h2>
+                  <p className="text-xs opacity-75">
+                    {activeYtVideo.channel} {activeYtVideo.views ? `· ${activeYtVideo.views}` : ''}
+                  </p>
+                  {sponsorBlockActive && sponsorSegments.length > 0 && (
+                    <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-xs text-emerald-900">
+                      <span className="font-bold">SponsorBlock Aktif:</span>{' '}
+                      {sponsorSegments
+                        .map(
+                          (s) =>
+                            `${s.category} (${Math.floor(s.segment[0])}s–${Math.floor(s.segment[1])}s)`
+                        )
+                        .join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                {ytVideos.map((v) => (
+                  <button
+                    key={v.videoId}
+                    type="button"
+                    onClick={() => {
+                      setActiveYtVideo(v);
+                      onRecordHistory(v.title, `https://www.youtube.com/watch?v=${v.videoId}`);
+                    }}
+                    className={`text-left rounded-2xl overflow-hidden border transition hover:border-red-500 ${
+                      darkReaderActive ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="relative aspect-video bg-slate-900">
+                      <img
+                        src={v.thumbnail}
+                        alt={v.title}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                        <div className="w-10 h-10 rounded-full bg-red-600/90 text-white flex items-center justify-center">
+                          <Play className="w-5 h-5 fill-white ml-0.5" />
+                        </div>
+                      </div>
+                      {v.duration && (
+                        <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-white text-[10px] font-mono">
+                          {v.duration}
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-3">
+                      <h3 className="text-xs sm:text-sm font-bold line-clamp-2 leading-snug">
+                        {v.title}
+                      </h3>
+                      <p className="text-[11px] opacity-70 mt-1 truncate">
+                        {v.channel} {v.views ? `· ${v.views}` : ''}
+                      </p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : mode === 'search' ? (
+          /* 3. Live Web Search Results Inside Erto Browser */
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            <div className="max-w-4xl mx-auto space-y-4">
               <div className="flex items-center justify-between border-b pb-3 border-slate-200/20">
                 <div className="flex items-center gap-2">
                   <Search className="w-4 h-4 text-emerald-600" />
-                  <h2 className="text-sm font-bold">
-                    Hasil pencarian untuk “{tab.query}”
-                  </h2>
+                  <h2 className="text-sm font-bold">Hasil pencarian untuk “{tab.query}”</h2>
                 </div>
                 <span className="text-xs opacity-70 capitalize">Mesin: {settings.searchEngine}</span>
               </div>
 
-              {loading ? (
-                <div className="space-y-3 py-4">
-                  {[1, 2, 3].map((i) => (
-                    <div
-                      key={i}
-                      className={`h-24 rounded-xl animate-pulse ${
-                        darkReaderActive ? 'bg-slate-800' : 'bg-slate-100'
+              <div className="space-y-3">
+                {(searchResults || []).map((item) => (
+                  <article
+                    key={item.url}
+                    onClick={() => onNavigate(item.url)}
+                    className={`p-4 rounded-2xl border transition cursor-pointer ${
+                      darkReaderActive
+                        ? 'bg-slate-900 border-slate-800 hover:border-emerald-500/50'
+                        : 'bg-slate-50/70 border-slate-200/80 hover:border-emerald-500'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs opacity-75 mb-1">
+                      <span className="font-mono truncate">{item.domain}</span>
+                      <span>·</span>
+                      <span>{item.source}</span>
+                    </div>
+                    <h3
+                      className={`text-base font-bold leading-snug ${
+                        darkReaderActive ? 'text-emerald-400' : 'text-emerald-800'
                       }`}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {searchResults.map((item) => (
-                    <article
-                      key={item.url}
-                      className={`p-4 rounded-2xl border transition cursor-pointer ${
-                        darkReaderActive
-                          ? 'bg-slate-900 border-slate-800 hover:border-emerald-500/50'
-                          : 'bg-slate-50/70 border-slate-200/80 hover:border-emerald-500'
-                      }`}
-                      onClick={() => onNavigate(item.url)}
                     >
-                      <div className="flex items-center gap-2 text-xs opacity-75 mb-1">
-                        <span className="font-mono truncate">{item.domain}</span>
-                        <span>·</span>
-                        <span>{item.source}</span>
-                      </div>
-                      <h3
-                        className={`text-base font-bold leading-snug ${
-                          darkReaderActive ? 'text-emerald-400' : 'text-emerald-800'
-                        }`}
-                      >
-                        {item.title}
-                      </h3>
-                      <p className="text-xs sm:text-sm opacity-80 mt-1 line-clamp-2">{item.snippet}</p>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : loading && !pageData ? (
-            <div className="py-16 text-center space-y-3">
-              <RotateCw className="w-8 h-8 text-emerald-600 animate-spin mx-auto" />
-              <p className="text-sm font-semibold">Memuat {tab.url}...</p>
-            </div>
-          ) : pageData?.youtubeEmbedId ? (
-            <div className="space-y-4">
-              <div className="aspect-video w-full rounded-2xl overflow-hidden bg-black shadow-lg">
-                <iframe
-                  title={pageData.title}
-                  src={`https://www.youtube.com/embed/${pageData.youtubeEmbedId}`}
-                  className="w-full h-full"
-                  allowFullScreen
-                />
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold">{pageData.title}</h2>
-                  <p className="text-xs opacity-75">{pageData.finalUrl}</p>
-                </div>
-                <a
-                  href={pageData.finalUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-700 text-white text-xs font-bold shrink-0"
-                >
-                  <span>Buka Asli</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
+                      {item.title}
+                    </h3>
+                    <p className="text-xs sm:text-sm opacity-80 mt-1 line-clamp-2">{item.snippet}</p>
+                  </article>
+                ))}
               </div>
             </div>
-          ) : pageData?.restricted || !pageData?.bodyHtml ? (
-            <div
-              className={`rounded-2xl p-6 border space-y-4 ${
-                darkReaderActive ? 'bg-slate-900 border-slate-800' : 'bg-emerald-50/70 border-emerald-200'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-6 h-6 text-emerald-700 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <h2 className="text-base font-bold">{pageData?.title || tab.url}</h2>
-                  <p className="text-xs sm:text-sm opacity-80">
-                    {pageData?.description ||
-                      'Situs ini menerapkan proteksi anti-embed/bot. Anda dapat menelusuri informasinya lewat pencarian web atau membukanya langsung.'}
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2.5 pt-1">
+          </div>
+        ) : translatedBody ? (
+          /* 4. Live Translated Reader View (when Google Translate extension is clicked) */
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            <div className="max-w-4xl mx-auto space-y-3">
+              <div className="rounded-xl bg-emerald-100 text-emerald-950 px-3.5 py-2 text-xs font-bold flex items-center justify-between">
+                <span>Diterjemahkan otomatis oleh Google Translate</span>
                 <button
                   type="button"
-                  onClick={() => onNavigate(pageData?.domain || tab.url)}
-                  className="px-4 py-2.5 rounded-xl bg-[#15803d] text-white text-xs font-bold hover:bg-[#166534] transition"
+                  onClick={() => setTranslatedBody(null)}
+                  className="underline"
                 >
-                  Cari di Web
+                  Kembali ke halaman penuh
                 </button>
-                <a
-                  href={tab.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold border transition ${
-                    darkReaderActive
-                      ? 'border-slate-700 text-slate-200 hover:bg-slate-800'
-                      : 'border-emerald-300 text-emerald-900 bg-white hover:bg-emerald-50'
-                  }`}
-                >
-                  <span>Buka Tautan Langsung</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
               </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Page Metadata Strip */}
-              <div className="flex items-center justify-between gap-3 border-b pb-3 border-slate-200/20">
-                <div className="min-w-0">
-                  <h1 className="text-lg sm:text-xl font-extrabold leading-snug truncate">
-                    {pageData.title}
-                  </h1>
-                  <p className="text-xs opacity-70 font-mono truncate">{pageData.finalUrl}</p>
-                </div>
-                <a
-                  href={pageData.finalUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-emerald-600/30 text-xs font-bold shrink-0 hover:bg-emerald-600/10"
-                >
-                  <span>Asli</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              </div>
-
-              {/* Rendered Live Web Content */}
+              <h1 className="text-xl font-extrabold">{translatedBody.title}</h1>
               <div
-                ref={contentRef}
-                onClick={handleContentClick}
-                className={`prose max-w-none break-words [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded-xl [&_a]:underline [&_a]:font-medium [&_h1]:text-xl [&_h1]:font-bold [&_h1]:my-3 [&_h2]:text-lg [&_h2]:font-bold [&_h2]:my-2.5 [&_p]:my-2 [&_p]:leading-relaxed [&_ul]:list-disc [&_ul]:pl-5 [&_li]:my-1 ${
-                  darkReaderActive
-                    ? '[&_a]:text-emerald-400 text-slate-200'
-                    : '[&_a]:text-emerald-700 text-slate-800'
-                }`}
-                dangerouslySetInnerHTML={{ __html: translatedHtml || pageData.bodyHtml }}
+                className="prose max-w-none [&_img]:max-w-full [&_img]:rounded-xl [&_p]:my-2"
+                dangerouslySetInnerHTML={{ __html: translatedBody.html }}
               />
             </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          /* 5. Full Real Webpage Frame via /api/frame Reverse Proxy */
+          <iframe
+            key={frameSrc}
+            title={pageTitle || tab.url}
+            src={frameSrc}
+            onLoad={() => setLoading(false)}
+            className="w-full flex-1 border-0 bg-white"
+            sandbox="allow-forms allow-scripts allow-same-origin allow-popups"
+          />
+        )}
       </main>
     </div>
   );

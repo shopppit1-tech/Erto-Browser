@@ -262,7 +262,7 @@ export function ExtensionsView({
                 className="bg-white/95 rounded-2xl p-3.5 shadow-[0_6px_18px_rgba(0,0,0,0.18)] flex items-center justify-between gap-3 border border-white"
               >
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <ExtensionIconTile iconKey={ext.iconKey} />
+                  <ExtensionIconTile iconKey={ext.iconKey} iconUrl={ext.iconUrl} alt={ext.name} />
                   <div className="min-w-0 flex-1">
                     <h3 className="text-[15px] font-bold text-slate-900 leading-tight truncate">
                       {ext.name}
@@ -275,6 +275,14 @@ export function ExtensionsView({
                         <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
                         {ext.rating.toFixed(1)}
                       </span>
+                      {ext.publisher && (
+                        <>
+                          <span className="text-slate-300">·</span>
+                          <span className="text-[11px] text-slate-500 truncate max-w-[140px]">
+                            {ext.publisher}
+                          </span>
+                        </>
+                      )}
                       {extSettings.developerMode && (
                         <>
                           <span className="text-slate-300">·</span>
