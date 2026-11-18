@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@layer base {
+  html,
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: contain;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+.erto-bg {
+  background:
+    radial-gradient(circle at 85% 22%, rgba(28, 198, 42, 0.36) 0%, transparent 45%),
+    radial-gradient(circle at 15% 10%, rgba(16, 185, 46, 0.25) 0%, transparent 40%),
+    radial-gradient(circle at 50% 85%, rgba(18, 168, 38, 0.32) 0%, transparent 55%),
+    linear-gradient(165deg, #02260a 0%, #055516 48%, #044612 75%, #022b0b 100%);
+}
+
+.erto-card-mint {
+  background: linear-gradient(180deg, rgba(242, 253, 244, 0.96) 0%, rgba(226, 250, 231, 0.94) 100%);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Erto Browser",
+  "description": "Cepat • Aman • Support Ekstensi — Browser mobile cepat dengan dukungan ekstensi Chrome, pemblokir iklan, mode gelap, dan penerjemah web.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
