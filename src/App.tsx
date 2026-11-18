@@ -126,7 +126,9 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!isNativeAndroidApk()) return;
+    // GeckoView initialization is expensive and can crash on unsupported devices;
+    // keep it off the startup path and load native extension state on demand.
+    if (!isNativeAndroidApk() || screen !== 'extensions') return;
     let disposed = false;
     ErtoWebView.listExtensions()
       .then(({ extensions: runtimeExtensions }) => {
@@ -150,7 +152,7 @@ export default function App() {
       })
       .catch((error) => console.warn('Gagal menyinkronkan ekstensi GeckoView', error));
     return () => { disposed = true; };
-  }, [setExtensions]);
+  }, [screen, setExtensions]);
 
   const [tabs, setTabs] = useState<BrowserTab[]>([
     {
