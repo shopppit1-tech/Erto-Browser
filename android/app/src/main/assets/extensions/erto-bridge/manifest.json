@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "name": "Erto Browser Extension Bridge",
+  "version": "1.0.0",
+  "description": "Runtime WebExtension untuk Erto Browser.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "extensions@erto.browser"
+    }
+  },
+  "permissions": ["webRequest", "webRequestBlocking", "<all_urls>", "storage"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
