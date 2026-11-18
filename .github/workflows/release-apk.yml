@@ -106,7 +106,12 @@ jobs:
             TAG_NAME="v1.0.${{ github.run_number }}"
           fi
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          APK_SRC="android/app/build/outputs/apk/release/app-release.apk"
+          APK_SRC="$(find android/app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          if [ -z "$APK_SRC" ]; then
+            echo "APK release tidak ditemukan. Isi folder output:"
+            find android/app/build/outputs -maxdepth 5 -type f -print || true
+            exit 1
+          fi
           APK_DEST="Erto-Browser-${TAG_NAME}.apk"
           cp "$APK_SRC" "$APK_DEST"
           echo "apk_file=$APK_DEST" >> "$GITHUB_OUTPUT"

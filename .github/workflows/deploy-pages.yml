@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Install dependencies
         run: |
@@ -40,6 +40,9 @@ jobs:
         run: |
           npm run build
           cp dist/index.html dist/404.html
+          touch dist/.nojekyll
+          test -f dist/index.html
+          test -n "$(find dist/assets -maxdepth 1 -type f -name '*.js' -print -quit)"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
