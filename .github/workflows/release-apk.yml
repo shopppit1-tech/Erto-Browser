@@ -28,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
@@ -89,7 +89,7 @@ jobs:
       - name: Build Android Release APK
         working-directory: android
         env:
-          ERTO_KEYSTORE_PATH: release.keystore
+          ERTO_KEYSTORE_PATH: app/release.keystore
           ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
           ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
