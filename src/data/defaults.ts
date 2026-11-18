@@ -7,10 +7,12 @@ import {
   HistoryItem,
   TopSiteItem,
 } from '../types/browser';
+import eagleLogoImg from '../assets/images/erto_eagle_logo_1795025317951.jpg';
+import heroEagleImg from '../assets/images/erto_hero_eagle_1795025319770.jpg';
 
 export const ASSETS = {
-  eagleLogo: '/src/assets/images/erto_eagle_logo_1795025317951.jpg',
-  heroEagle: '/src/assets/images/erto_hero_eagle_1795025319770.jpg',
+  eagleLogo: eagleLogoImg,
+  heroEagle: heroEagleImg,
 };
 
 export const QUICK_ACCESS_SITES: TopSiteItem[] = [

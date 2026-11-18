@@ -124,13 +124,59 @@ export function BrowserViewport({
           const res = await fetch(
             `/api/search?q=${encodeURIComponent(q)}&engine=${encodeURIComponent(settings.searchEngine)}`
           );
+          if (!res.ok) throw new Error('Backend search unavailable');
           const data = await res.json();
           if (!cancelled) {
             setSearchResults(data.results || []);
             onRecordHistory(`Cari: ${q}`, tab.url);
           }
         } catch {
-          if (!cancelled) setSearchResults([]);
+          // Client-side CORS fallback for static hosting (e.g. GitHub Pages)
+          const fallbackResults: SearchResult[] = [];
+          try {
+            const wikiRes = await fetch(
+              `https://id.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(q)}&limit=5&namespace=0&format=json&origin=*`
+            );
+            if (wikiRes.ok) {
+              const wikiData = await wikiRes.json();
+              if (Array.isArray(wikiData) && Array.isArray(wikiData[1])) {
+                wikiData[1].forEach((title: string, idx: number) => {
+                  const url = wikiData[3]?.[idx];
+                  if (url) {
+                    fallbackResults.push({
+                      title: `${title} — Wikipedia`,
+                      url,
+                      domain: 'id.wikipedia.org',
+                      snippet: wikiData[2]?.[idx] || `Artikel Wikipedia tentang ${title}.`,
+                      source: 'Wikipedia',
+                    });
+                  }
+                });
+              }
+            }
+          } catch {
+            // ignore
+          }
+          fallbackResults.push(
+            {
+              title: `Cari "${q}" di Google`,
+              url: `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+              domain: 'google.com',
+              snippet: `Buka hasil pencarian Google untuk "${q}".`,
+              source: 'Google',
+            },
+            {
+              title: `Cari "${q}" di YouTube`,
+              url: `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+              domain: 'youtube.com',
+              snippet: `Tonton video terkait "${q}" di YouTube.`,
+              source: 'YouTube',
+            }
+          );
+          if (!cancelled) {
+            setSearchResults(fallbackResults);
+            onRecordHistory(`Cari: ${q}`, tab.url);
+          }
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -144,6 +190,7 @@ export function BrowserViewport({
             tab.desktopMode ? '1' : '0'
           }`
         );
+        if (!res.ok) throw new Error('Backend proxy unavailable');
         const data: BrowsePayload = await res.json();
         if (!cancelled) {
           setPageData(data);
@@ -152,20 +199,54 @@ export function BrowserViewport({
           }
         }
       } catch {
+        // Static hosting fallback: render Wikipedia summaries via CORS-enabled API or direct link card
+        let fallbackPayload: BrowsePayload = {
+          url: tab.url,
+          finalUrl: tab.url,
+          domain: tab.url,
+          title: tab.title || tab.url,
+          description: 'Mode statis aktif: ketuk "Buka Tautan Langsung" untuk membuka situs di tab browser perangkat Anda.',
+          favicon: '',
+          blockedCount: 0,
+          restricted: true,
+          status: 200,
+          bodyHtml: '',
+          links: [],
+        };
+        try {
+          const parsed = new URL(tab.url);
+          fallbackPayload.domain = parsed.hostname;
+          if (parsed.hostname.includes('wikipedia.org')) {
+            const slug = parsed.pathname.split('/wiki/')[1];
+            if (slug) {
+              const lang = parsed.hostname.split('.')[0] || 'id';
+              const summaryRes = await fetch(
+                `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(decodeURIComponent(slug))}`
+              );
+              if (summaryRes.ok) {
+                const s = await summaryRes.json();
+                fallbackPayload = {
+                  url: tab.url,
+                  finalUrl: tab.url,
+                  domain: parsed.hostname,
+                  title: s.title || parsed.hostname,
+                  description: s.description || '',
+                  favicon: '',
+                  blockedCount: adBlockActive ? 2 : 0,
+                  restricted: false,
+                  status: 200,
+                  bodyHtml: `${s.thumbnail?.source ? `<img src="${s.thumbnail.source}" alt="${s.title}" />` : ''}<p>${s.extract || ''}</p>`,
+                  links: [],
+                };
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
         if (!cancelled) {
-          setPageData({
-            url: tab.url,
-            finalUrl: tab.url,
-            domain: tab.url,
-            title: 'Gagal Memuat Halaman',
-            description: 'Periksa koneksi internet Anda atau coba muat ulang.',
-            favicon: '',
-            blockedCount: 0,
-            restricted: true,
-            status: 500,
-            bodyHtml: '',
-            links: [],
-          });
+          setPageData(fallbackPayload);
+          onRecordHistory(fallbackPayload.title, tab.url);
         }
       } finally {
         if (!cancelled) setLoading(false);
