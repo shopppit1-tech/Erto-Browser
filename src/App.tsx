@@ -282,6 +282,10 @@ export default function App() {
       const code = (error as { code?: string })?.code || '';
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         showToast('Login Google dibatalkan');
+      } else if (code === 'auth/no-credential') {
+        showToast('Tambahkan atau pilih akun Google di perangkat ini, lalu coba lagi.');
+      } else if (code === 'auth/google-config-error') {
+        showToast('Konfigurasi Google Sign-In aplikasi belum lengkap.');
       } else if (code === 'auth/popup-blocked') {
         showToast('Pop-up diblokir browser. Izinkan pop-up untuk Login Google.');
       } else if (code === 'auth/unauthorized-domain') {
