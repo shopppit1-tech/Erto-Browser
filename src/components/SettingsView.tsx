@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ArrowLeft,
   Search,
@@ -8,13 +8,24 @@ import {
   Trash2,
   Puzzle,
   Info,
+  LogOut,
+  CloudCheck,
+  User as UserIcon,
+  Server,
 } from 'lucide-react';
+import type { User } from 'firebase/auth';
 import { BrowserSettings, SearchEngine } from '../types/browser';
 import { ASSETS } from '../data/defaults';
+import { getApiBaseUrl, setApiBaseUrl } from '../utils/api';
+import { GoogleGLogo } from './BrandIcons';
 import { PWAInstallButton } from './PWAInstallUI';
 
 interface SettingsViewProps {
   settings: BrowserSettings;
+  user: User | null;
+  authLoading: boolean;
+  onGoogleLogin: () => void;
+  onGoogleLogout: () => void;
   onUpdateSettings: (next: BrowserSettings) => void;
   onClearBrowsingData: () => void;
   onOpenExtensions: () => void;
@@ -23,11 +34,18 @@ interface SettingsViewProps {
 
 export function SettingsView({
   settings,
+  user,
+  authLoading,
+  onGoogleLogin,
+  onGoogleLogout,
   onUpdateSettings,
   onClearBrowsingData,
   onOpenExtensions,
   onBack,
 }: SettingsViewProps) {
+  const [serverUrl, setServerUrl] = useState(() => getApiBaseUrl());
+  const [serverSaved, setServerSaved] = useState(false);
+
   const toggleSetting = (key: 'adShieldBuiltIn' | 'blockTrackers' | 'desktopDefault' | 'forceDarkWeb' | 'saveHistory') => {
     onUpdateSettings({
       ...settings,
@@ -71,6 +89,65 @@ export function SettingsView({
           <Puzzle className="w-4 h-4" />
           <span>Ekstensi</span>
         </button>
+      </section>
+
+      {/* Akun Google & Sinkronisasi Cloud */}
+      <section className="bg-white/95 rounded-2xl p-4 shadow-lg text-slate-900">
+        {user ? (
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3 min-w-0">
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  alt={user.displayName || 'Profil Google'}
+                  referrerPolicy="no-referrer"
+                  className="w-12 h-12 rounded-full object-cover border border-emerald-200 shrink-0"
+                />
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+                  <UserIcon className="w-6 h-6" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="text-sm font-extrabold text-slate-900 truncate">
+                  {user.displayName || 'Pengguna Google'}
+                </p>
+                <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                <p className="inline-flex items-center gap-1 text-[11px] font-bold text-[#15803d] mt-1">
+                  <CloudCheck className="w-3.5 h-3.5" />
+                  <span>Sinkronisasi Bookmark & Riwayat Aktif</span>
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onGoogleLogout}
+              disabled={authLoading}
+              className="px-3.5 py-2 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-bold inline-flex items-center gap-1.5 shrink-0 transition"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Keluar</span>
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-extrabold text-slate-900">Akun Google Erto Browser</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Masuk dengan akun Google Anda untuk menyinkronkan bookmark & riwayat secara otomatis.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onGoogleLogin}
+              disabled={authLoading}
+              className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-2 shadow-sm shrink-0 transition"
+            >
+              <GoogleGLogo className="w-4 h-4 bg-white rounded-full p-0.5 shrink-0" />
+              <span>{authLoading ? 'Memproses...' : 'Masuk dengan Google'}</span>
+            </button>
+          </div>
+        )}
       </section>
 
       {/* PWA Install Card */}
@@ -234,6 +311,41 @@ export function SettingsView({
             </div>
           </div>
         </button>
+
+        <div className="p-4 space-y-2">
+          <div className="flex items-center gap-2.5">
+            <Server className="w-5 h-5 text-emerald-700 shrink-0" />
+            <div>
+              <p className="text-sm font-bold">Server Backend APK (Opsional)</p>
+              <p className="text-xs text-slate-500">
+                Isi URL server Node.js Anda agar versi APK Android terhubung ke proxy web, YouTube & Chrome Web Store.
+              </p>
+            </div>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setApiBaseUrl(serverUrl);
+              setServerSaved(true);
+              setTimeout(() => setServerSaved(false), 2000);
+            }}
+            className="flex gap-2 pt-1"
+          >
+            <input
+              type="url"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              placeholder="https://erto-server-anda.run.app"
+              className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none focus:border-emerald-600"
+            />
+            <button
+              type="submit"
+              className="px-3.5 py-2 rounded-xl bg-[#15803d] text-white text-xs font-bold shrink-0"
+            >
+              {serverSaved ? 'Tersimpan' : 'Simpan'}
+            </button>
+          </form>
+        </div>
 
         <div className="p-4 flex items-center gap-3">
           <Info className="w-5 h-5 text-emerald-700 shrink-0" />

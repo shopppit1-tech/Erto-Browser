@@ -11,6 +11,7 @@ import {
   Layers,
   ShieldCheck,
 } from 'lucide-react';
+import type { User } from 'firebase/auth';
 import { ASSETS, QUICK_ACCESS_SITES } from '../data/defaults';
 import { BookmarkItem, HistoryItem, TopSiteItem } from '../types/browser';
 import { GoogleGLogo, SiteBrandTile } from './BrandIcons';
@@ -23,6 +24,9 @@ interface HomeViewProps {
   tabCount: number;
   installedExtCount: number;
   incognitoActive: boolean;
+  user: User | null;
+  onGoogleLogin: () => void;
+  onOpenAccountSettings: () => void;
   onNavigateUrl: (input: string) => void;
   onOpenExtensions: () => void;
   onOpenBookmarksAll: () => void;
@@ -40,6 +44,9 @@ export function HomeView({
   tabCount,
   installedExtCount,
   incognitoActive,
+  user,
+  onGoogleLogin,
+  onOpenAccountSettings,
   onNavigateUrl,
   onOpenExtensions,
   onOpenBookmarksAll,
@@ -119,8 +126,41 @@ export function HomeView({
           </div>
         </div>
 
-        {/* Right Header Actions: Install App (when eligible), Tabs, Extensions Puzzle, 3-dot Menu */}
+        {/* Right Header Actions: Google Account, Install App (when eligible), Tabs, Extensions Puzzle, 3-dot Menu */}
         <div className="flex items-center gap-1 shrink-0">
+          {user ? (
+            <button
+              type="button"
+              onClick={onOpenAccountSettings}
+              aria-label={`Akun Google: ${user.displayName || user.email || 'Profil'}`}
+              title={user.displayName || user.email || 'Akun Google'}
+              className="min-w-[40px] min-h-[40px] px-1.5 flex items-center gap-1.5 rounded-full bg-white/15 hover:bg-white/25 border border-[#a3e635]/50 transition shrink-0"
+            >
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  alt={user.displayName || 'Google'}
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-full object-cover"
+                />
+              ) : (
+                <span className="w-7 h-7 rounded-full bg-[#a3e635] text-[#052e0d] text-xs font-extrabold flex items-center justify-center">
+                  {(user.displayName || user.email || 'G').charAt(0).toUpperCase()}
+                </span>
+              )}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onGoogleLogin}
+              aria-label="Masuk dengan Google"
+              title="Masuk dengan Google"
+              className="min-h-[38px] px-2.5 flex items-center gap-1.5 rounded-full bg-white text-slate-900 hover:bg-emerald-50 text-xs font-bold shadow-sm active:scale-95 transition shrink-0"
+            >
+              <GoogleGLogo className="w-4 h-4 shrink-0" />
+              <span className="hidden xs:inline sm:inline">Masuk</span>
+            </button>
+          )}
           <PWAInstallButton variant="compact" />
           <button
             type="button"

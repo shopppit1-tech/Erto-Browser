@@ -13,8 +13,12 @@ import {
   Check,
   Search,
   Globe,
+  ExternalLink,
+  RotateCw,
+  Info,
 } from 'lucide-react';
 import { AppScreen, BrowserTab, ExtensionItem, TopSiteItem } from '../types/browser';
+import { apiUrl } from '../utils/api';
 import { ExtensionIconTile, SiteBrandTile } from './BrandIcons';
 
 /* ---------- Tab Switcher Sheet ---------- */
@@ -193,11 +197,13 @@ export function VoiceSearchModal({
 }) {
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [manualText, setManualText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     if (!open) return;
     setTranscript('');
+    setManualText('');
     setErrorMsg('');
 
     type SpeechCtor = new () => {
@@ -218,7 +224,7 @@ export function VoiceSearchModal({
     const Recognition = win.SpeechRecognition || win.webkitSpeechRecognition;
 
     if (!Recognition) {
-      setErrorMsg('Mikrofon suara tidak didukung pada browser ini. Pilih pencarian cepat di bawah:');
+      setErrorMsg('Pengenalan suara tidak didukung pada peramban ini. Ketik pencarian Anda di bawah:');
       return;
     }
 
@@ -241,7 +247,7 @@ export function VoiceSearchModal({
     };
     rec.onerror = () => {
       setListening(false);
-      setErrorMsg('Izin mikrofon belum aktif. Ketik atau pilih topik pencarian:');
+      setErrorMsg('Izin mikrofon belum aktif. Izinkan mikrofon atau ketik pencarian langsung:');
     };
     rec.onend = () => setListening(false);
 
@@ -293,21 +299,29 @@ export function VoiceSearchModal({
           </p>
         </div>
 
-        <div className="flex flex-wrap justify-center gap-2 pt-1">
-          {['Berita teknologi hari ini', 'Wikipedia Indonesia', 'Cuaca Jakarta'].map((sample) => (
-            <button
-              key={sample}
-              type="button"
-              onClick={() => {
-                onResult(sample);
-                onClose();
-              }}
-              className="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-800 text-xs font-semibold hover:bg-emerald-100"
-            >
-              {sample}
-            </button>
-          ))}
-        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!manualText.trim()) return;
+            onResult(manualText.trim());
+            onClose();
+          }}
+          className="flex gap-2 pt-1"
+        >
+          <input
+            type="text"
+            value={manualText}
+            onChange={(e) => setManualText(e.target.value)}
+            placeholder="Ketik kata kunci atau URL..."
+            className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-600"
+          />
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-xl bg-[#15803d] text-white text-xs font-bold shrink-0"
+          >
+            Cari
+          </button>
+        </form>
       </div>
     </div>
   );
@@ -326,20 +340,57 @@ export function QrScannerModal({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [manualUrl, setManualUrl] = useState('');
   const [camError, setCamError] = useState(false);
+  const [scanStatus, setScanStatus] = useState('Arahkan kamera ke kode QR...');
 
   useEffect(() => {
     if (!open) return;
     let stream: MediaStream | null = null;
+    let rafId = 0;
+    let active = true;
     setCamError(false);
+    setScanStatus('Arahkan kamera ke kode QR...');
+
+    type BarcodeDetectorCtor = new (opts: { formats: string[] }) => {
+      detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
+    };
+    const Detector = (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
+    const detector = Detector ? new Detector({ formats: ['qr_code'] }) : null;
+
+    const scanLoop = async () => {
+      if (!active || !videoRef.current) return;
+      if (detector && videoRef.current.readyState >= 2) {
+        try {
+          const codes = await detector.detect(videoRef.current);
+          const raw = codes[0]?.rawValue?.trim();
+          if (raw) {
+            setScanStatus(`Terdeteksi: ${raw}`);
+            onOpenUrl(raw);
+            onClose();
+            return;
+          }
+        } catch {
+          // continue scanning
+        }
+      }
+      rafId = requestAnimationFrame(scanLoop);
+    };
 
     if (navigator.mediaDevices?.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({ video: { facingMode: 'environment' } })
         .then((s) => {
+          if (!active) {
+            s.getTracks().forEach((t) => t.stop());
+            return;
+          }
           stream = s;
           if (videoRef.current) {
             videoRef.current.srcObject = s;
           }
+          if (!detector) {
+            setScanStatus('Kamera aktif. Pemindai QR otomatis tersedia di Chrome/Android.');
+          }
+          rafId = requestAnimationFrame(scanLoop);
         })
         .catch(() => setCamError(true));
     } else {
@@ -347,9 +398,11 @@ export function QrScannerModal({
     }
 
     return () => {
+      active = false;
+      if (rafId) cancelAnimationFrame(rafId);
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [open]);
+  }, [open, onClose, onOpenUrl]);
 
   if (!open) return null;
 
@@ -382,6 +435,7 @@ export function QrScannerModal({
           )}
           <div className="pointer-events-none absolute inset-6 border-2 border-[#a3e635]/80 rounded-2xl" />
         </div>
+        {!camError && <p className="text-xs text-slate-600 text-center">{scanStatus}</p>}
 
         <form
           onSubmit={(e) => {
@@ -396,7 +450,7 @@ export function QrScannerModal({
             type="text"
             value={manualUrl}
             onChange={(e) => setManualUrl(e.target.value)}
-            placeholder="Atau tempel URL hasil QR di sini..."
+            placeholder="Atau tempel URL / tautan QR di sini..."
             className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-emerald-600"
           />
           <button
@@ -464,37 +518,84 @@ export function TopSitesModal({
   );
 }
 
-/* ---------- Chrome Web Store Explorer Modal ---------- */
+export interface LiveCwsItem {
+  cwsId: string;
+  name: string;
+  description: string;
+  publisher: string;
+  rating: number;
+  iconUrl: string;
+  storeUrl: string;
+}
+
+/* ---------- Chrome Web Store Explorer Modal (Live Search + CRX) ---------- */
 export function ChromeWebStoreModal({
   open,
   extensions,
   onClose,
-  onInstallToggle,
+  onInstallCwsItem,
+  onDownloadCrx,
 }: {
   open: boolean;
   extensions: ExtensionItem[];
   onClose: () => void;
-  onInstallToggle: (id: string) => void;
+  onInstallCwsItem: (item: LiveCwsItem) => void;
+  onDownloadCrx: (cwsId: string, name: string) => void;
 }) {
   const [search, setSearch] = useState('');
+  const [liveItems, setLiveItems] = useState<LiveCwsItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [storeError, setStoreError] = useState<string | null>(null);
+  const [submittedQuery, setSubmittedQuery] = useState('');
+
+  const fetchLiveStore = async (q: string) => {
+    setLoading(true);
+    setStoreError(null);
+    setSubmittedQuery(q);
+    try {
+      const res = await fetch(apiUrl(`/api/cws-search?q=${encodeURIComponent(q)}`));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (Array.isArray(data.items)) {
+        setLiveItems(data.items);
+      } else {
+        setLiveItems([]);
+      }
+    } catch {
+      setLiveItems([]);
+      setStoreError('Tidak dapat terhubung ke chromewebstore.google.com saat ini.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open && liveItems.length === 0 && !loading) {
+      fetchLiveStore('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   if (!open) return null;
 
-  const filtered = extensions.filter(
-    (e) =>
-      e.name.toLowerCase().includes(search.toLowerCase()) ||
-      e.description.toLowerCase().includes(search.toLowerCase()) ||
-      e.category.toLowerCase().includes(search.toLowerCase())
-  );
+  const isCwsInstalled = (cwsId: string, name: string) =>
+    extensions.some(
+      (e) =>
+        e.installed &&
+        (e.cwsId === cwsId || e.name.toLowerCase() === name.toLowerCase())
+    );
 
   return (
     <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="w-full sm:max-w-xl bg-[#043710] border border-[#a3e635]/50 rounded-t-3xl sm:rounded-3xl p-4 space-y-3.5 text-white max-h-[86vh] flex flex-col shadow-2xl">
+      <div className="w-full sm:max-w-xl bg-[#043710] border border-[#a3e635]/50 rounded-t-3xl sm:rounded-3xl p-4 space-y-3 text-white max-h-[88vh] flex flex-col shadow-2xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Puzzle className="w-6 h-6 text-[#a3e635]" />
             <div>
               <h2 className="text-base font-extrabold">Chrome Web Store</h2>
-              <p className="text-xs text-emerald-100/80">Katalog Ekstensi Kompatibel Erto Browser</p>
+              <p className="text-xs text-emerald-100/80">
+                Terhubung langsung ke chromewebstore.google.com
+              </p>
             </div>
           </div>
           <button
@@ -507,53 +608,126 @@ export function ChromeWebStoreModal({
           </button>
         </div>
 
-        <div className="bg-white rounded-xl h-10 px-3 flex items-center gap-2 text-slate-900">
-          <Search className="w-4 h-4 text-emerald-700 shrink-0" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari ekstensi di toko..."
-            className="flex-1 bg-transparent text-sm outline-none"
-          />
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            fetchLiveStore(search.trim());
+          }}
+          className="flex gap-2"
+        >
+          <div className="flex-1 bg-white rounded-xl h-10 px-3 flex items-center gap-2 text-slate-900">
+            <Search className="w-4 h-4 text-emerald-700 shrink-0" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cari di Chrome Web Store asli (mis. dark, adblock, translate)..."
+              className="flex-1 bg-transparent text-sm outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="px-4 h-10 rounded-xl bg-[#a3e635] text-[#052e0d] text-xs font-extrabold shrink-0 hover:bg-[#bef264] transition"
+          >
+            {loading ? '...' : 'Cari'}
+          </button>
+        </form>
+
+        <div className="rounded-xl bg-[#03260b]/80 border border-emerald-500/30 px-3 py-2 flex items-start gap-2 text-[11px] text-emerald-100/90 leading-snug">
+          <Info className="w-4 h-4 text-[#a3e635] shrink-0 mt-0.5" />
+          <span>
+            Hasil pencarian & file paket <strong className="text-white">.crx</strong> diambil langsung dari server resmi Google Chrome Web Store.
+          </span>
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
-          {filtered.map((ext) => (
-            <div
-              key={ext.id}
-              className="bg-white/95 rounded-2xl p-3 flex items-center justify-between gap-3 text-slate-900"
-            >
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <ExtensionIconTile iconKey={ext.iconKey} />
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-bold truncate">{ext.name}</h3>
-                  <p className="text-xs text-slate-600 line-clamp-1">{ext.description}</p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    {ext.category} · ★ {ext.rating.toFixed(1)}
-                  </p>
-                </div>
-              </div>
+          {loading ? (
+            <div className="py-12 text-center space-y-2 text-emerald-100">
+              <RotateCw className="w-7 h-7 animate-spin mx-auto text-[#a3e635]" />
+              <p className="text-xs font-semibold">
+                Mengambil data langsung dari Chrome Web Store
+                {submittedQuery ? ` untuk "${submittedQuery}"` : ''}...
+              </p>
+            </div>
+          ) : storeError ? (
+            <div className="bg-white/95 rounded-2xl p-6 text-center text-slate-900 space-y-3">
+              <p className="text-sm font-bold">{storeError}</p>
               <button
                 type="button"
-                onClick={() => onInstallToggle(ext.id)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 inline-flex items-center gap-1 ${
-                  ext.installed
-                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                    : 'bg-[#15803d] text-white'
-                }`}
+                onClick={() => fetchLiveStore(submittedQuery)}
+                className="px-4 py-2 rounded-xl bg-[#15803d] text-white text-xs font-bold"
               >
-                {ext.installed ? (
-                  <>
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Terpasang</span>
-                  </>
-                ) : (
-                  <span>Pasang</span>
-                )}
+                Coba Lagi
               </button>
             </div>
-          ))}
+          ) : liveItems.length === 0 ? (
+            <div className="bg-white/95 rounded-2xl p-6 text-center text-slate-900">
+              <p className="text-sm font-bold">Ekstensi tidak ditemukan</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Coba kata kunci pencarian lain di Chrome Web Store.
+              </p>
+            </div>
+          ) : (
+            liveItems.map((item) => {
+              const installed = isCwsInstalled(item.cwsId, item.name);
+              return (
+                <div
+                  key={item.cwsId}
+                  className="bg-white/95 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-slate-900"
+                >
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <ExtensionIconTile iconKey="default" iconUrl={item.iconUrl} alt={item.name} />
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-bold truncate">{item.name}</h3>
+                      <p className="text-xs text-slate-600 line-clamp-2">{item.description}</p>
+                      <p className="text-[11px] text-slate-500 mt-1 truncate">
+                        ★ {item.rating.toFixed(1)} · {item.publisher}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => onDownloadCrx(item.cwsId, item.name)}
+                      title="Unduh paket .crx asli dari server Google"
+                      className="px-2.5 py-2 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-900 text-[11px] font-bold inline-flex items-center gap-1 hover:bg-emerald-100"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>.CRX</span>
+                    </button>
+                    <a
+                      href={item.storeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Buka di Chrome Web Store"
+                      className="p-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => onInstallCwsItem(item)}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold shrink-0 inline-flex items-center gap-1 ${
+                        installed
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-[#15803d] text-white'
+                      }`}
+                    >
+                      {installed ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Terpasang</span>
+                        </>
+                      ) : (
+                        <span>Pasang</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,22 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import {
+  auth,
+  db,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  onSnapshot,
+  serverTimestamp,
+  signInWithGoogleAccount,
+  signOutGoogleAccount,
+  handleFirestoreError,
+  OperationType,
+} from './firebase';
 import {
   AppScreen,
   BookmarkItem,
@@ -28,6 +46,7 @@ import { BrowserViewport } from './components/BrowserViewport';
 import { BottomNav } from './components/BottomNav';
 import {
   ChromeWebStoreModal,
+  LiveCwsItem,
   OverflowMenuModal,
   QrScannerModal,
   TabSwitcherModal,
@@ -35,6 +54,18 @@ import {
   VoiceSearchModal,
 } from './components/BrowserModals';
 import { OfflineIndicator } from './components/PWAInstallUI';
+import { apiUrl } from './utils/api';
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function toValidFirestoreId(raw: string): string {
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+  return cleaned || `id_${Date.now()}`;
+}
 
 function usePersistentState<T>(key: string, fallback: T): [T, React.Dispatch<React.SetStateAction<T>>] {
   const [state, setState] = useState<T>(() => {
@@ -114,6 +145,8 @@ export default function App() {
   const [topSitesOpen, setTopSitesOpen] = useState(false);
   const [webStoreOpen, setWebStoreOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -124,6 +157,123 @@ export default function App() {
     const t = setTimeout(() => setToast(null), 2400);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time Firestore sync for Bookmarks & History when signed in with verified Google account
+  useEffect(() => {
+    if (!user || !user.emailVerified) return;
+
+    const bookmarksPath = `users/${user.uid}/bookmarks`;
+    const bookmarksQuery = query(
+      collection(db, 'users', user.uid, 'bookmarks'),
+      where('ownerId', '==', user.uid)
+    );
+    const unsubBookmarks = onSnapshot(
+      bookmarksQuery,
+      (snapshot) => {
+        if (snapshot.empty) return;
+        const cloudBookmarks: BookmarkItem[] = snapshot.docs
+          .map((d) => {
+            const data = d.data();
+            const createdAtMs =
+              typeof data.createdAt?.toMillis === 'function'
+                ? data.createdAt.toMillis()
+                : Date.now();
+            return {
+              id: d.id,
+              title: String(data.title || data.url || ''),
+              url: String(data.url || ''),
+              iconKey: String(data.iconKey || 'globe-fav'),
+              category: String(data.category || 'Favorit'),
+              pinnedOnHome: Boolean(data.pinnedOnHome),
+              createdAt: createdAtMs,
+            };
+          })
+          .sort((a, b) => b.createdAt - a.createdAt);
+        setBookmarks(cloudBookmarks);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, bookmarksPath);
+      }
+    );
+
+    const historyPath = `users/${user.uid}/history`;
+    const historyQuery = query(
+      collection(db, 'users', user.uid, 'history'),
+      where('ownerId', '==', user.uid)
+    );
+    const unsubHistory = onSnapshot(
+      historyQuery,
+      (snapshot) => {
+        if (snapshot.empty) return;
+        const cloudHistory: HistoryItem[] = snapshot.docs
+          .map((d) => {
+            const data = d.data();
+            const visitedAtMs =
+              typeof data.visitedAt?.toMillis === 'function'
+                ? data.visitedAt.toMillis()
+                : Date.now();
+            return {
+              id: d.id,
+              title: String(data.title || data.url || ''),
+              url: String(data.url || ''),
+              visitedAt: visitedAtMs,
+            };
+          })
+          .sort((a, b) => b.visitedAt - a.visitedAt)
+          .slice(0, 120);
+        setHistory(cloudHistory);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, historyPath);
+      }
+    );
+
+    return () => {
+      unsubBookmarks();
+      unsubHistory();
+    };
+  }, [user, setBookmarks, setHistory]);
+
+  const handleGoogleLogin = useCallback(async () => {
+    if (authLoading) return;
+    setAuthLoading(true);
+    try {
+      const loggedIn = await signInWithGoogleAccount();
+      showToast(`Masuk sebagai ${loggedIn.displayName || loggedIn.email || 'Pengguna Google'}`);
+    } catch (error: unknown) {
+      const code = (error as { code?: string })?.code || '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        showToast('Login Google dibatalkan');
+      } else if (code === 'auth/popup-blocked') {
+        showToast('Pop-up diblokir browser. Izinkan pop-up untuk Login Google.');
+      } else {
+        showToast('Gagal masuk dengan Google. Silakan coba lagi.');
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authLoading, showToast]);
+
+  const handleGoogleLogout = useCallback(async () => {
+    if (authLoading) return;
+    setAuthLoading(true);
+    try {
+      await signOutGoogleAccount();
+      showToast('Berhasil keluar dari akun Google');
+    } catch {
+      showToast('Gagal keluar dari akun');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authLoading, showToast]);
 
   const activeTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) || tabs[0],
@@ -309,36 +459,77 @@ export default function App() {
   const handleRecordHistory = useCallback(
     (title: string, url: string) => {
       if (!settings.saveHistory || activeTab?.incognito) return;
+      const cleanUrl = url.slice(0, 1024);
+      const cleanTitle = (title || cleanUrl).slice(0, 200);
+      const histId = `hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
       setHistory((prev) => {
-        const deduped = prev.filter((item) => item.url !== url || Date.now() - item.visitedAt > 60000);
+        const recentSame = prev.find(
+          (item) => item.url === cleanUrl && Date.now() - item.visitedAt <= 60000
+        );
+        if (recentSame) return prev;
+
+        if (user && user.emailVerified && cleanUrl.length >= 4 && cleanTitle.length >= 1) {
+          const histPath = `users/${user.uid}/history/${histId}`;
+          setDoc(doc(db, 'users', user.uid, 'history', histId), {
+            ownerId: user.uid,
+            title: cleanTitle,
+            url: cleanUrl,
+            visitedAt: serverTimestamp(),
+          }).catch((err) => handleFirestoreError(err, OperationType.CREATE, histPath));
+        }
+
+        const deduped = prev.filter((item) => item.url !== cleanUrl || Date.now() - item.visitedAt > 60000);
         return [
           {
-            id: `hist-${Date.now()}`,
-            title: title || url,
-            url,
+            id: histId,
+            title: cleanTitle,
+            url: cleanUrl,
             visitedAt: Date.now(),
           },
           ...deduped,
         ].slice(0, 120);
       });
     },
-    [activeTab?.incognito, setHistory, settings.saveHistory]
+    [activeTab?.incognito, setHistory, settings.saveHistory, user]
   );
 
   const handleToggleBookmark = useCallback(
     (title: string, url: string) => {
+      const cleanUrl = url.slice(0, 1024);
+      const cleanTitle = (title || cleanUrl).slice(0, 160);
       setBookmarks((prev) => {
-        const exists = prev.find((b) => b.url === url);
+        const exists = prev.find((b) => b.url === cleanUrl);
         if (exists) {
           showToast('Bookmark dihapus');
+          if (user && user.emailVerified) {
+            const safeId = toValidFirestoreId(exists.id);
+            const bmPath = `users/${user.uid}/bookmarks/${safeId}`;
+            deleteDoc(doc(db, 'users', user.uid, 'bookmarks', safeId)).catch((err) =>
+              handleFirestoreError(err, OperationType.DELETE, bmPath)
+            );
+          }
           return prev.filter((b) => b.id !== exists.id);
         }
+        const bmId = `bm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         showToast('Disimpan ke Bookmark');
+        if (user && user.emailVerified && cleanUrl.length >= 4 && cleanTitle.length >= 1) {
+          const bmPath = `users/${user.uid}/bookmarks/${bmId}`;
+          setDoc(doc(db, 'users', user.uid, 'bookmarks', bmId), {
+            ownerId: user.uid,
+            title: cleanTitle,
+            url: cleanUrl,
+            iconKey: 'globe-fav',
+            category: 'Favorit',
+            pinnedOnHome: false,
+            createdAt: serverTimestamp(),
+          }).catch((err) => handleFirestoreError(err, OperationType.CREATE, bmPath));
+        }
         return [
           {
-            id: `bm-${Date.now()}`,
-            title: title || url,
-            url,
+            id: bmId,
+            title: cleanTitle,
+            url: cleanUrl,
             iconKey: 'globe-fav',
             category: 'Favorit',
             pinnedOnHome: false,
@@ -348,40 +539,90 @@ export default function App() {
         ];
       });
     },
-    [setBookmarks, showToast]
+    [setBookmarks, showToast, user]
   );
 
   const handleTriggerDownload = useCallback(
-    (filename: string, url: string) => {
+    async (filename: string, url: string) => {
       const id = `dl-${Date.now()}`;
       const newDl: DownloadItem = {
         id,
         filename,
         url,
-        sizeText: 'Menghitung...',
-        mimeType: 'text/html',
+        sizeText: 'Mengunduh...',
+        mimeType: 'application/octet-stream',
         status: 'berjalan',
-        progress: 25,
+        progress: 10,
         downloadedAt: Date.now(),
       };
       setDownloads((prev) => [newDl, ...prev]);
       showToast(`Mengunduh ${filename}`);
 
-      // Trigger real browser file download via proxy
-      const a = document.createElement('a');
-      a.href = `/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      try {
+        const res = await fetch(
+          apiUrl(`/api/download-proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`)
+        );
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const total = Number(res.headers.get('content-length') || 0);
+        const contentType = res.headers.get('content-type') || 'application/octet-stream';
+        let blob: Blob;
 
-      setTimeout(() => {
+        if (res.body) {
+          const reader = res.body.getReader();
+          const chunks: Uint8Array<ArrayBuffer>[] = [];
+          let received = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              chunks.push(new Uint8Array(value));
+              received += value.length;
+              const pct = total > 0 ? Math.min(95, Math.round((received / total) * 100)) : 60;
+              setDownloads((prev) =>
+                prev.map((d) =>
+                  d.id === id ? { ...d, progress: pct, sizeText: formatByteSize(received) } : d
+                )
+              );
+            }
+          }
+          blob = new Blob(chunks, { type: contentType });
+        } else {
+          blob = await res.blob();
+        }
+
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+
         setDownloads((prev) =>
           prev.map((d) =>
-            d.id === id ? { ...d, status: 'selesai', progress: 100, sizeText: '184 KB' } : d
+            d.id === id
+              ? {
+                  ...d,
+                  status: 'selesai',
+                  progress: 100,
+                  mimeType: contentType,
+                  sizeText: formatByteSize(blob.size),
+                }
+              : d
           )
         );
-      }, 900);
+        showToast(`Unduhan selesai (${formatByteSize(blob.size)})`);
+      } catch {
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.id === id ? { ...d, status: 'jeda', progress: 0, sizeText: 'Gagal mengunduh' } : d
+          )
+        );
+        showToast(`Gagal mengunduh ${filename}`);
+      }
     },
     [setDownloads, showToast]
   );
@@ -431,6 +672,104 @@ export default function App() {
     [setExtensions, showToast]
   );
 
+  const handleInstallCwsItem = useCallback(
+    (item: LiveCwsItem) => {
+      setExtensions((prev) => {
+        const existing = prev.find(
+          (e) =>
+            e.cwsId === item.cwsId ||
+            e.name.toLowerCase() === item.name.toLowerCase()
+        );
+        if (existing) {
+          const nextInstalled = !existing.installed;
+          showToast(nextInstalled ? `${existing.name} dipasang` : `${existing.name} dihapus`);
+          return prev.map((e) =>
+            e.id === existing.id
+              ? { ...e, installed: nextInstalled, enabled: nextInstalled }
+              : e
+          );
+        }
+        showToast(`${item.name} dipasang dari Chrome Web Store`);
+        return [
+          {
+            id: `cws-${item.cwsId}`,
+            cwsId: item.cwsId,
+            name: item.name,
+            description: item.description,
+            rating: item.rating,
+            category: 'Chrome Web Store',
+            version: '1.0',
+            iconKey: 'default',
+            iconUrl: item.iconUrl,
+            storeUrl: item.storeUrl,
+            publisher: item.publisher,
+            isFromCws: true,
+            installed: true,
+            enabled: true,
+            featured: true,
+            permissions: ['Ekstensi Chrome Web Store'],
+          },
+          ...prev,
+        ];
+      });
+    },
+    [setExtensions, showToast]
+  );
+
+  const handleDownloadCrx = useCallback(
+    async (cwsId: string, name: string) => {
+      const safeName = `${name.replace(/[^a-zA-Z0-9._-]/g, '_')}-${cwsId.slice(0, 8)}.crx`;
+      const dlId = `dl-crx-${Date.now()}`;
+      const dlUrl = apiUrl(`/api/cws-crx?id=${encodeURIComponent(cwsId)}&name=${encodeURIComponent(name)}`);
+
+      setDownloads((prev) => [
+        {
+          id: dlId,
+          filename: safeName,
+          url: `https://chromewebstore.google.com/detail/${cwsId}`,
+          sizeText: 'Mengunduh CRX...',
+          mimeType: 'application/x-chrome-extension',
+          status: 'berjalan',
+          progress: 20,
+          downloadedAt: Date.now(),
+        },
+        ...prev,
+      ]);
+      showToast(`Mengunduh ${safeName}`);
+
+      try {
+        const res = await fetch(dlUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objUrl;
+        a.download = safeName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.id === dlId
+              ? { ...d, status: 'selesai', progress: 100, sizeText: formatByteSize(blob.size) }
+              : d
+          )
+        );
+        showToast(`${safeName} terunduh (${formatByteSize(blob.size)})`);
+      } catch {
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.id === dlId ? { ...d, status: 'jeda', progress: 0, sizeText: 'Gagal mengunduh' } : d
+          )
+        );
+        showToast(`Gagal mengunduh ${safeName}`);
+      }
+    },
+    [setDownloads, showToast]
+  );
+
   const activeIsBookmarked = useMemo(
     () => Boolean(activeTab?.url && bookmarks.some((b) => b.url === activeTab.url)),
     [activeTab?.url, bookmarks]
@@ -447,6 +786,8 @@ export default function App() {
           extensions={extensions}
           settings={settings}
           isBookmarked={activeIsBookmarked}
+          user={user}
+          onGoogleLogin={handleGoogleLogin}
           onGoHome={() => setScreen('home')}
           onNavigate={openUrlInActiveTab}
           onGoBack={handleGoBackInBrowser}
@@ -475,6 +816,9 @@ export default function App() {
               tabCount={tabs.length}
               installedExtCount={installedExtCount}
               incognitoActive={Boolean(activeTab?.incognito)}
+              user={user}
+              onGoogleLogin={handleGoogleLogin}
+              onOpenAccountSettings={() => navigateScreen('settings')}
               onNavigateUrl={openUrlInActiveTab}
               onOpenExtensions={() => navigateScreen('extensions')}
               onOpenBookmarksAll={() => navigateScreen('bookmarks')}
@@ -507,15 +851,18 @@ export default function App() {
               onDeleteDownload={(id) =>
                 setDownloads((prev) => prev.filter((d) => d.id !== id))
               }
-              onTogglePauseDownload={(id) =>
-                setDownloads((prev) =>
-                  prev.map((d) =>
-                    d.id === id
-                      ? { ...d, status: d.status === 'jeda' ? 'berjalan' : 'jeda' }
-                      : d
-                  )
-                )
-              }
+              onTogglePauseDownload={(id) => {
+                const target = downloads.find((d) => d.id === id);
+                if (!target) return;
+                if (target.status === 'jeda') {
+                  setDownloads((prev) => prev.filter((d) => d.id !== id));
+                  handleTriggerDownload(target.filename, target.url);
+                } else {
+                  setDownloads((prev) =>
+                    prev.map((d) => (d.id === id ? { ...d, status: 'jeda' } : d))
+                  );
+                }
+              }}
               onTriggerNewDownload={handleTriggerDownload}
               onOpenUrl={openUrlInActiveTab}
             />
@@ -526,11 +873,28 @@ export default function App() {
               history={history}
               onBack={() => setScreen('home')}
               onOpenUrl={openUrlInActiveTab}
-              onDeleteItem={(id) =>
-                setHistory((prev) => prev.filter((h) => h.id !== id))
-              }
+              onDeleteItem={(id) => {
+                setHistory((prev) => prev.filter((h) => h.id !== id));
+                if (user && user.emailVerified) {
+                  const safeId = toValidFirestoreId(id);
+                  const path = `users/${user.uid}/history/${safeId}`;
+                  deleteDoc(doc(db, 'users', user.uid, 'history', safeId)).catch((err) =>
+                    handleFirestoreError(err, OperationType.DELETE, path)
+                  );
+                }
+              }}
               onClearAll={() => {
+                const current = [...history];
                 setHistory([]);
+                if (user && user.emailVerified) {
+                  current.forEach((h) => {
+                    const safeId = toValidFirestoreId(h.id);
+                    const path = `users/${user.uid}/history/${safeId}`;
+                    deleteDoc(doc(db, 'users', user.uid, 'history', safeId)).catch((err) =>
+                      handleFirestoreError(err, OperationType.DELETE, path)
+                    );
+                  });
+                }
                 showToast('Semua riwayat dihapus');
               }}
             />
@@ -542,39 +906,95 @@ export default function App() {
               onBack={() => setScreen('home')}
               onOpenUrl={openUrlInActiveTab}
               onAddBookmark={(title, url, category) => {
+                const bmId = `bm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                const cleanTitle = title.slice(0, 160);
+                const cleanUrl = url.slice(0, 1024);
+                const cleanCat = category.slice(0, 40) || 'Favorit';
                 setBookmarks((prev) => [
                   {
-                    id: `bm-${Date.now()}`,
-                    title,
-                    url,
+                    id: bmId,
+                    title: cleanTitle,
+                    url: cleanUrl,
                     iconKey: 'globe-fav',
-                    category,
+                    category: cleanCat,
                     pinnedOnHome: false,
                     createdAt: Date.now(),
                   },
                   ...prev,
                 ]);
+                if (user && user.emailVerified && cleanUrl.length >= 4 && cleanTitle.length >= 1) {
+                  const path = `users/${user.uid}/bookmarks/${bmId}`;
+                  setDoc(doc(db, 'users', user.uid, 'bookmarks', bmId), {
+                    ownerId: user.uid,
+                    title: cleanTitle,
+                    url: cleanUrl,
+                    iconKey: 'globe-fav',
+                    category: cleanCat,
+                    pinnedOnHome: false,
+                    createdAt: serverTimestamp(),
+                  }).catch((err) => handleFirestoreError(err, OperationType.CREATE, path));
+                }
                 showToast('Bookmark ditambahkan');
               }}
-              onDeleteBookmark={(id) =>
-                setBookmarks((prev) => prev.filter((b) => b.id !== id))
-              }
-              onTogglePinHome={(id) =>
+              onDeleteBookmark={(id) => {
+                setBookmarks((prev) => prev.filter((b) => b.id !== id));
+                if (user && user.emailVerified) {
+                  const safeId = toValidFirestoreId(id);
+                  const path = `users/${user.uid}/bookmarks/${safeId}`;
+                  deleteDoc(doc(db, 'users', user.uid, 'bookmarks', safeId)).catch((err) =>
+                    handleFirestoreError(err, OperationType.DELETE, path)
+                  );
+                }
+              }}
+              onTogglePinHome={(id) => {
+                const target = bookmarks.find((b) => b.id === id);
+                const nextPinned = target ? !target.pinnedOnHome : true;
                 setBookmarks((prev) =>
                   prev.map((b) =>
                     b.id === id ? { ...b, pinnedOnHome: !b.pinnedOnHome } : b
                   )
-                )
-              }
+                );
+                if (user && user.emailVerified && target) {
+                  const safeId = toValidFirestoreId(id);
+                  const path = `users/${user.uid}/bookmarks/${safeId}`;
+                  updateDoc(doc(db, 'users', user.uid, 'bookmarks', safeId), {
+                    pinnedOnHome: nextPinned,
+                  }).catch(() => {
+                    setDoc(doc(db, 'users', user.uid, 'bookmarks', safeId), {
+                      ownerId: user.uid,
+                      title: target.title.slice(0, 160),
+                      url: target.url.slice(0, 1024),
+                      iconKey: target.iconKey.slice(0, 40) || 'globe-fav',
+                      category: target.category.slice(0, 40) || 'Favorit',
+                      pinnedOnHome: nextPinned,
+                      createdAt: serverTimestamp(),
+                    }).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+                  });
+                }
+              }}
             />
           )}
 
           {screen === 'settings' && (
             <SettingsView
               settings={settings}
+              user={user}
+              authLoading={authLoading}
+              onGoogleLogin={handleGoogleLogin}
+              onGoogleLogout={handleGoogleLogout}
               onUpdateSettings={setSettings}
               onClearBrowsingData={() => {
+                const current = [...history];
                 setHistory([]);
+                if (user && user.emailVerified) {
+                  current.forEach((h) => {
+                    const safeId = toValidFirestoreId(h.id);
+                    const path = `users/${user.uid}/history/${safeId}`;
+                    deleteDoc(doc(db, 'users', user.uid, 'history', safeId)).catch((err) =>
+                      handleFirestoreError(err, OperationType.DELETE, path)
+                    );
+                  });
+                }
                 showToast('Riwayat & cache penjelajahan dibersihkan');
               }}
               onOpenExtensions={() => navigateScreen('extensions')}
@@ -634,7 +1054,8 @@ export default function App() {
         open={webStoreOpen}
         extensions={extensions}
         onClose={() => setWebStoreOpen(false)}
-        onInstallToggle={handleInstallExtension}
+        onInstallCwsItem={handleInstallCwsItem}
+        onDownloadCrx={handleDownloadCrx}
       />
 
       {/* Lightweight Toast Notification */}

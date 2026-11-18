@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Erto Browser</string>
+    <string name="title_activity_main">Erto Browser</string>
+    <string name="package_name">com.erto.browser</string>
+    <string name="custom_url_scheme">com.erto.browser</string>
+</resources>

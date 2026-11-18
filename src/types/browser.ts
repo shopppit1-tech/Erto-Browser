@@ -66,6 +66,11 @@ export interface ExtensionItem {
   category: string;
   version: string;
   iconKey: string;
+  iconUrl?: string;
+  cwsId?: string;
+  storeUrl?: string;
+  publisher?: string;
+  isFromCws?: boolean;
   installed: boolean;
   enabled: boolean;
   featured: boolean;
