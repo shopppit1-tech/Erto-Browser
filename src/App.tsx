@@ -254,8 +254,10 @@ export default function App() {
         showToast('Login Google dibatalkan');
       } else if (code === 'auth/popup-blocked') {
         showToast('Pop-up diblokir browser. Izinkan pop-up untuk Login Google.');
+      } else if (code === 'auth/unauthorized-domain') {
+        showToast(`Domain (${window.location.hostname}) belum diizinkan di Firebase Auth`);
       } else {
-        showToast('Gagal masuk dengan Google. Silakan coba lagi.');
+        showToast(`Gagal masuk dengan Google${code ? ` (${code})` : ''}.`);
       }
     } finally {
       setAuthLoading(false);
@@ -786,6 +788,7 @@ export default function App() {
           extensions={extensions}
           settings={settings}
           isBookmarked={activeIsBookmarked}
+          overlayOpen={tabSheetOpen || menuOpen || voiceOpen || qrOpen || topSitesOpen || webStoreOpen}
           user={user}
           onGoogleLogin={handleGoogleLogin}
           onGoHome={() => setScreen('home')}
