@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Home,
   ArrowLeft,
@@ -21,6 +21,7 @@ import {
 import type { User } from 'firebase/auth';
 import { BrowserSettings, BrowserTab, ExtensionItem } from '../types/browser';
 import { apiUrl } from '../utils/api';
+import { ErtoWebView, isNativeAndroidApk } from '../utils/nativeBrowser';
 import { GoogleGLogo } from './BrandIcons';
 
 interface SearchResult {
@@ -46,6 +47,7 @@ interface BrowserViewportProps {
   extensions: ExtensionItem[];
   settings: BrowserSettings;
   isBookmarked: boolean;
+  overlayOpen?: boolean;
   user: User | null;
   onGoogleLogin: () => void;
   onGoHome: () => void;
@@ -107,6 +109,7 @@ export function BrowserViewport({
   extensions,
   settings,
   isBookmarked,
+  overlayOpen = false,
   user,
   onGoogleLogin,
   onGoHome,
@@ -121,6 +124,8 @@ export function BrowserViewport({
   onOpenOverflowMenu,
   onToggleDesktopMode,
 }: BrowserViewportProps) {
+  const nativeApk = isNativeAndroidApk();
+  const headerRef = useRef<HTMLElement>(null);
   const [addressInput, setAddressInput] = useState(tab.query || tab.url);
   const [loading, setLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
@@ -133,6 +138,8 @@ export function BrowserViewport({
   const [translateLang, setTranslateLang] = useState<'id' | 'en'>('id');
   const [reloadNonce, setReloadNonce] = useState(0);
   const [pageTitle, setPageTitle] = useState(tab.title);
+  const [nativeCanGoBack, setNativeCanGoBack] = useState(false);
+  const [nativeCanGoForward, setNativeCanGoForward] = useState(false);
   const [sponsorSegments, setSponsorSegments] = useState<Array<{ category: string; segment: [number, number] }>>([]);
 
   const isExtensionActive = useCallback(
@@ -150,7 +157,25 @@ export function BrowserViewport({
   const sponsorBlockActive = isExtensionActive('sponsorblock');
   const activeExtCount = extensions.filter((e) => e.installed && e.enabled).length;
 
-  const mode = getSpecialMode(tab.url);
+  const mode = nativeApk ? 'web' : getSpecialMode(tab.url);
+
+  const resolveNativeTargetUrl = useCallback(
+    (rawUrl: string) => {
+      if (!rawUrl.startsWith('erto://search')) return rawUrl;
+      let q = tab.query || '';
+      if (!q) {
+        try {
+          q = new URL(rawUrl.replace('erto://', 'https://erto.local/')).searchParams.get('q') || '';
+        } catch {}
+      }
+      const enc = encodeURIComponent(q);
+      if (settings.searchEngine === 'duckduckgo') return `https://duckduckgo.com/?q=${enc}`;
+      if (settings.searchEngine === 'bing') return `https://www.bing.com/search?q=${enc}`;
+      if (settings.searchEngine === 'yahoo') return `https://search.yahoo.com/search?p=${enc}`;
+      return `https://www.google.com/search?q=${enc}`;
+    },
+    [settings.searchEngine, tab.query]
+  );
 
   // Sync address bar & listen to iframe navigation messages
   useEffect(() => {
@@ -158,6 +183,67 @@ export function BrowserViewport({
     setPageTitle(tab.title);
     setTranslatedBody(null);
   }, [tab.url, tab.query, tab.title]);
+
+  // Native Android WebView lifecycle & pageState events
+  useEffect(() => {
+    if (!nativeApk) return;
+    let listenerHandle: { remove: () => Promise<void> } | null = null;
+    ErtoWebView.addListener('pageState', (state) => {
+      setLoading(state.loading);
+      if (state.url) setAddressInput(state.url);
+      if (state.title) setPageTitle(state.title);
+      setNativeCanGoBack(Boolean(state.canGoBack));
+      setNativeCanGoForward(Boolean(state.canGoForward));
+      if (!state.loading && state.url) {
+        onRecordHistory(state.title || state.url, state.url);
+      }
+    })
+      .then((h) => {
+        listenerHandle = h;
+      })
+      .catch(() => {});
+
+    return () => {
+      listenerHandle?.remove().catch(() => {});
+      ErtoWebView.hide().catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeApk]);
+
+  useEffect(() => {
+    if (!nativeApk) return;
+    if (overlayOpen || translatedBody) {
+      ErtoWebView.hide().catch(() => {});
+      return;
+    }
+    const targetUrl = resolveNativeTargetUrl(tab.url);
+    const headerRect = headerRef.current?.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const topOffsetPx = Math.round((headerRect ? headerRect.bottom : 96) * dpr);
+
+    ErtoWebView.open({
+      url: targetUrl,
+      topOffsetPx,
+      adblock: adBlockActive,
+      dark: darkReaderActive,
+      desktop: tab.desktopMode,
+      forceReload: reloadNonce > 0,
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativeApk, tab.url, overlayOpen, translatedBody, reloadNonce]);
+
+  useEffect(() => {
+    if (!nativeApk || overlayOpen || translatedBody) return;
+    const headerRect = headerRef.current?.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const topOffsetPx = Math.round((headerRect ? headerRect.bottom : 96) * dpr);
+    ErtoWebView.setOptions({
+      adblock: adBlockActive,
+      dark: darkReaderActive,
+      desktop: tab.desktopMode,
+      topOffsetPx,
+    }).catch(() => {});
+  }, [nativeApk, overlayOpen, translatedBody, adBlockActive, darkReaderActive, tab.desktopMode]);
 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
@@ -176,8 +262,9 @@ export function BrowserViewport({
     return () => window.removeEventListener('message', onMessage);
   }, [onNavigate, onRecordHistory, tab.url]);
 
-  // Load search / YouTube / iframe content
+  // Load search / YouTube / iframe content (when not handled by native Android WebView)
   useEffect(() => {
+    if (nativeApk) return;
     let cancelled = false;
     setTranslatedBody(null);
 
@@ -360,8 +447,8 @@ export function BrowserViewport({
     }
   };
 
-  const canGoBack = tab.historyIndex > 0;
-  const canGoForward = tab.historyIndex < tab.historyStack.length - 1;
+  const canGoBack = nativeApk ? nativeCanGoBack : tab.historyIndex > 0;
+  const canGoForward = nativeApk ? nativeCanGoForward : tab.historyIndex < tab.historyStack.length - 1;
   const frameSrc = apiUrl(
     `/api/frame?url=${encodeURIComponent(tab.url)}&adblock=${
       adBlockActive ? '1' : '0'
@@ -372,6 +459,7 @@ export function BrowserViewport({
     <div className="flex flex-col h-screen bg-slate-50 text-slate-900">
       {/* Compact Browser Top Chrome */}
       <header
+        ref={headerRef}
         className={`shrink-0 px-2.5 pt-2 pb-2 border-b shadow-sm ${
           tab.incognito
             ? 'bg-slate-900 border-slate-800 text-white'
@@ -406,7 +494,7 @@ export function BrowserViewport({
             />
             <button
               type="button"
-              onClick={() => setReloadNonce((n) => n + 1)}
+              onClick={() => (nativeApk ? ErtoWebView.reload() : setReloadNonce((n) => n + 1))}
               aria-label="Muat Ulang"
               className="p-1 text-slate-600 hover:text-emerald-700"
             >
@@ -453,7 +541,7 @@ export function BrowserViewport({
             <button
               type="button"
               disabled={!canGoBack}
-              onClick={onGoBack}
+              onClick={() => (nativeApk ? ErtoWebView.goBack() : onGoBack())}
               className="inline-flex items-center gap-1 text-white/90 disabled:opacity-35 hover:text-[#fde047] py-1"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
@@ -462,7 +550,7 @@ export function BrowserViewport({
             <button
               type="button"
               disabled={!canGoForward}
-              onClick={onGoForward}
+              onClick={() => (nativeApk ? ErtoWebView.goForward() : onGoForward())}
               className="inline-flex items-center gap-1 text-white/90 disabled:opacity-35 hover:text-[#fde047] py-1"
             >
               <span>Maju</span>
@@ -782,8 +870,13 @@ export function BrowserViewport({
               />
             </div>
           </div>
+        ) : nativeApk ? (
+          /* 5a. Native Android WebView occupies this area below the top header */
+          <div className="flex-1 flex items-center justify-center bg-white text-slate-600 text-xs">
+            Memuat {addressInput}...
+          </div>
         ) : (
-          /* 5. Full Real Webpage Frame via /api/frame Reverse Proxy */
+          /* 5b. Full Real Webpage Frame via /api/frame Reverse Proxy (Web/PWA mode) */
           <iframe
             key={frameSrc}
             title={pageTitle || tab.url}

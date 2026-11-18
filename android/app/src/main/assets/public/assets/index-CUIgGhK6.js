@@ -51852,6 +51852,520 @@ function SettingsView({ settings, user, authLoading, onGoogleLogin, onGoogleLogo
 		]
 	});
 }
+// node_modules/@capacitor/core/dist/index.js
+/*! Capacitor: https://capacitorjs.com/ - MIT License */
+var ExceptionCode;
+(function(ExceptionCode) {
+	/**
+	* API is not implemented.
+	*
+	* This usually means the API can't be used because it is not implemented for
+	* the current platform.
+	*/
+	ExceptionCode["Unimplemented"] = "UNIMPLEMENTED";
+	/**
+	* API is not available.
+	*
+	* This means the API can't be used right now because:
+	*   - it is currently missing a prerequisite, such as network connectivity
+	*   - it requires a particular platform or browser version
+	*/
+	ExceptionCode["Unavailable"] = "UNAVAILABLE";
+})(ExceptionCode || (ExceptionCode = {}));
+var CapacitorException = class extends Error {
+	constructor(message, code, data) {
+		super(message);
+		this.message = message;
+		this.code = code;
+		this.data = data;
+	}
+};
+var getPlatformId = (win) => {
+	var _a, _b;
+	if (win === null || win === void 0 ? void 0 : win.androidBridge) return "android";
+	else if ((_b = (_a = win === null || win === void 0 ? void 0 : win.webkit) === null || _a === void 0 ? void 0 : _a.messageHandlers) === null || _b === void 0 ? void 0 : _b.bridge) return "ios";
+	else return "web";
+};
+var createCapacitor = (win) => {
+	const capCustomPlatform = win.CapacitorCustomPlatform || null;
+	const cap = win.Capacitor || {};
+	const Plugins = cap.Plugins = cap.Plugins || {};
+	const getPlatform = () => {
+		return capCustomPlatform !== null ? capCustomPlatform.name : getPlatformId(win);
+	};
+	const isNativePlatform = () => getPlatform() !== "web";
+	const isPluginAvailable = (pluginName) => {
+		const plugin = registeredPlugins.get(pluginName);
+		if (plugin === null || plugin === void 0 ? void 0 : plugin.platforms.has(getPlatform())) return true;
+		if (getPluginHeader(pluginName)) return true;
+		return false;
+	};
+	const getPluginHeader = (pluginName) => {
+		var _a;
+		return (_a = cap.PluginHeaders) === null || _a === void 0 ? void 0 : _a.find((h) => h.name === pluginName);
+	};
+	const handleError = (err) => win.console.error(err);
+	const registeredPlugins = /* @__PURE__ */ new Map();
+	const registerPlugin = (pluginName, jsImplementations = {}) => {
+		const registeredPlugin = registeredPlugins.get(pluginName);
+		if (registeredPlugin) {
+			console.warn(`Capacitor plugin "${pluginName}" already registered. Cannot register plugins twice.`);
+			return registeredPlugin.proxy;
+		}
+		const platform = getPlatform();
+		const pluginHeader = getPluginHeader(pluginName);
+		let jsImplementation;
+		const loadPluginImplementation = async () => {
+			if (!jsImplementation && platform in jsImplementations) jsImplementation = typeof jsImplementations[platform] === "function" ? jsImplementation = await jsImplementations[platform]() : jsImplementation = jsImplementations[platform];
+			else if (capCustomPlatform !== null && !jsImplementation && "web" in jsImplementations) jsImplementation = typeof jsImplementations["web"] === "function" ? jsImplementation = await jsImplementations["web"]() : jsImplementation = jsImplementations["web"];
+			return jsImplementation;
+		};
+		const createPluginMethod = (impl, prop) => {
+			var _a, _b;
+			if (pluginHeader) {
+				const methodHeader = pluginHeader === null || pluginHeader === void 0 ? void 0 : pluginHeader.methods.find((m) => prop === m.name);
+				if (methodHeader) {
+					if (methodHeader.rtype === "promise") return (options) => cap.nativePromise(pluginName, prop.toString(), options);
+					else return (options, callback) => cap.nativeCallback(pluginName, prop.toString(), options, callback);
+				} else if (impl) return (_a = impl[prop]) === null || _a === void 0 ? void 0 : _a.bind(impl);
+			} else if (impl) return (_b = impl[prop]) === null || _b === void 0 ? void 0 : _b.bind(impl);
+			else throw new CapacitorException(`"${pluginName}" plugin is not implemented on ${platform}`, ExceptionCode.Unimplemented);
+		};
+		const createPluginMethodWrapper = (prop) => {
+			let remove;
+			const wrapper = (...args) => {
+				const p = loadPluginImplementation().then((impl) => {
+					const fn = createPluginMethod(impl, prop);
+					if (fn) {
+						const p = fn(...args);
+						remove = p === null || p === void 0 ? void 0 : p.remove;
+						return p;
+					} else throw new CapacitorException(`"${pluginName}.${prop}()" is not implemented on ${platform}`, ExceptionCode.Unimplemented);
+				});
+				if (prop === "addListener") p.remove = async () => remove();
+				return p;
+			};
+			wrapper.toString = () => `${prop.toString()}() { [capacitor code] }`;
+			Object.defineProperty(wrapper, "name", {
+				value: prop,
+				writable: false,
+				configurable: false
+			});
+			return wrapper;
+		};
+		const addListener = createPluginMethodWrapper("addListener");
+		const removeListener = createPluginMethodWrapper("removeListener");
+		const addListenerNative = (eventName, callback) => {
+			const call = addListener({ eventName }, callback).then((callbackId) => callbackId);
+			const remove = async () => {
+				const callbackId = await call;
+				await removeListener({
+					eventName,
+					callbackId
+				});
+			};
+			const p = new Promise((resolve) => call.then(() => resolve({ remove })));
+			p.remove = async () => {
+				console.warn(`Using addListener() without 'await' is deprecated.`);
+				await remove();
+			};
+			return p;
+		};
+		const proxy = new Proxy({}, { get(_, prop) {
+			switch (prop) {
+				case "$$typeof": return;
+				case "toJSON": return () => ({});
+				case "addListener": return pluginHeader ? addListenerNative : addListener;
+				case "removeListener": return removeListener;
+				default: return createPluginMethodWrapper(prop);
+			}
+		} });
+		Plugins[pluginName] = proxy;
+		registeredPlugins.set(pluginName, {
+			name: pluginName,
+			proxy,
+			platforms: /* @__PURE__ */ new Set([...Object.keys(jsImplementations), ...pluginHeader ? [platform] : []])
+		});
+		return proxy;
+	};
+	if (!cap.convertFileSrc) cap.convertFileSrc = (filePath) => filePath;
+	cap.getPlatform = getPlatform;
+	cap.handleError = handleError;
+	cap.isNativePlatform = isNativePlatform;
+	cap.isPluginAvailable = isPluginAvailable;
+	cap.registerPlugin = registerPlugin;
+	cap.Exception = CapacitorException;
+	cap.DEBUG = !!cap.DEBUG;
+	cap.isLoggingEnabled = !!cap.isLoggingEnabled;
+	return cap;
+};
+var initCapacitorGlobal = (win) => win.Capacitor = createCapacitor(win);
+var Capacitor = /*#__PURE__*/ initCapacitorGlobal(typeof globalThis !== "undefined" ? globalThis : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : {});
+var registerPlugin = Capacitor.registerPlugin;
+/**
+* Base class web plugins should extend.
+*/
+var WebPlugin = class {
+	constructor() {
+		this.listeners = {};
+		this.retainedEventArguments = {};
+		this.windowListeners = {};
+	}
+	addListener(eventName, listenerFunc) {
+		let firstListener = false;
+		if (!this.listeners[eventName]) {
+			this.listeners[eventName] = [];
+			firstListener = true;
+		}
+		this.listeners[eventName].push(listenerFunc);
+		const windowListener = this.windowListeners[eventName];
+		if (windowListener && !windowListener.registered) this.addWindowListener(windowListener);
+		if (firstListener) this.sendRetainedArgumentsForEvent(eventName);
+		const remove = async () => this.removeListener(eventName, listenerFunc);
+		return Promise.resolve({ remove });
+	}
+	async removeAllListeners() {
+		this.listeners = {};
+		for (const listener in this.windowListeners) this.removeWindowListener(this.windowListeners[listener]);
+		this.windowListeners = {};
+	}
+	notifyListeners(eventName, data, retainUntilConsumed) {
+		const listeners = this.listeners[eventName];
+		if (!listeners) {
+			if (retainUntilConsumed) {
+				let args = this.retainedEventArguments[eventName];
+				if (!args) args = [];
+				args.push(data);
+				this.retainedEventArguments[eventName] = args;
+			}
+			return;
+		}
+		listeners.forEach((listener) => listener(data));
+	}
+	hasListeners(eventName) {
+		var _a;
+		return !!((_a = this.listeners[eventName]) === null || _a === void 0 ? void 0 : _a.length);
+	}
+	registerWindowListener(windowEventName, pluginEventName) {
+		this.windowListeners[pluginEventName] = {
+			registered: false,
+			windowEventName,
+			pluginEventName,
+			handler: (event) => {
+				this.notifyListeners(pluginEventName, event);
+			}
+		};
+	}
+	unimplemented(msg = "not implemented") {
+		return new Capacitor.Exception(msg, ExceptionCode.Unimplemented);
+	}
+	unavailable(msg = "not available") {
+		return new Capacitor.Exception(msg, ExceptionCode.Unavailable);
+	}
+	async removeListener(eventName, listenerFunc) {
+		const listeners = this.listeners[eventName];
+		if (!listeners) return;
+		const index = listeners.indexOf(listenerFunc);
+		if (index !== -1) this.listeners[eventName].splice(index, 1);
+		if (!this.listeners[eventName].length) this.removeWindowListener(this.windowListeners[eventName]);
+	}
+	addWindowListener(handle) {
+		window.addEventListener(handle.windowEventName, handle.handler);
+		handle.registered = true;
+	}
+	removeWindowListener(handle) {
+		if (!handle) return;
+		window.removeEventListener(handle.windowEventName, handle.handler);
+		handle.registered = false;
+	}
+	sendRetainedArgumentsForEvent(eventName) {
+		const args = this.retainedEventArguments[eventName];
+		if (!args) return;
+		delete this.retainedEventArguments[eventName];
+		args.forEach((arg) => {
+			this.notifyListeners(eventName, arg);
+		});
+	}
+};
+/******** END WEB VIEW PLUGIN ********/
+/******** COOKIES PLUGIN ********/
+/**
+* Safely web encode a string value (inspired by js-cookie)
+* @param str The string value to encode
+*/
+var encode = (str) => encodeURIComponent(str).replace(/%(2[346B]|5E|60|7C)/g, decodeURIComponent).replace(/[()]/g, escape);
+/**
+* Safely web decode a string value (inspired by js-cookie)
+* @param str The string value to decode
+*/
+var decode = (str) => str.replace(/(%[\dA-F]{2})+/gi, decodeURIComponent);
+var CapacitorCookiesPluginWeb = class extends WebPlugin {
+	async getCookies() {
+		const cookies = document.cookie;
+		const cookieMap = {};
+		cookies.split(";").forEach((cookie) => {
+			if (cookie.length <= 0) return;
+			let [key, value] = cookie.replace(/=/, "CAP_COOKIE").split("CAP_COOKIE");
+			key = decode(key).trim();
+			value = decode(value).trim();
+			cookieMap[key] = value;
+		});
+		return cookieMap;
+	}
+	async setCookie(options) {
+		try {
+			const encodedKey = encode(options.key);
+			const encodedValue = encode(options.value);
+			const expires = options.expires ? `; expires=${options.expires.replace("expires=", "")}` : "";
+			const path = (options.path || "/").replace("path=", "");
+			const domain = options.url != null && options.url.length > 0 ? `domain=${options.url}` : "";
+			document.cookie = `${encodedKey}=${encodedValue || ""}${expires}; path=${path}; ${domain};`;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async deleteCookie(options) {
+		try {
+			document.cookie = `${options.key}=; Max-Age=0`;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async clearCookies() {
+		try {
+			const cookies = document.cookie.split(";") || [];
+			for (const cookie of cookies) document.cookie = cookie.replace(/^ +/, "").replace(/=.*/, `=;expires=${(/* @__PURE__ */ new Date()).toUTCString()};path=/`);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+	async clearAllCookies() {
+		try {
+			await this.clearCookies();
+		} catch (error) {
+			return Promise.reject(error);
+		}
+	}
+};
+registerPlugin("CapacitorCookies", { web: () => new CapacitorCookiesPluginWeb() });
+/**
+* Read in a Blob value and return it as a base64 string
+* @param blob The blob value to convert to a base64 string
+*/
+var readBlobAsBase64 = async (blob) => new Promise((resolve, reject) => {
+	const reader = new FileReader();
+	reader.onload = () => {
+		const base64String = reader.result;
+		resolve(base64String.indexOf(",") >= 0 ? base64String.split(",")[1] : base64String);
+	};
+	reader.onerror = (error) => reject(error);
+	reader.readAsDataURL(blob);
+});
+/**
+* Normalize an HttpHeaders map by lowercasing all of the values
+* @param headers The HttpHeaders object to normalize
+*/
+var normalizeHttpHeaders = (headers = {}) => {
+	const originalKeys = Object.keys(headers);
+	return Object.keys(headers).map((k) => k.toLocaleLowerCase()).reduce((acc, key, index) => {
+		acc[key] = headers[originalKeys[index]];
+		return acc;
+	}, {});
+};
+/**
+* Builds a string of url parameters that
+* @param params A map of url parameters
+* @param shouldEncode true if you should encodeURIComponent() the values (true by default)
+*/
+var buildUrlParams = (params, shouldEncode = true) => {
+	if (!params) return null;
+	return Object.entries(params).reduce((accumulator, entry) => {
+		const [key, value] = entry;
+		let encodedValue;
+		let item;
+		if (Array.isArray(value)) {
+			item = "";
+			value.forEach((str) => {
+				encodedValue = shouldEncode ? encodeURIComponent(str) : str;
+				item += `${key}=${encodedValue}&`;
+			});
+			item.slice(0, -1);
+		} else {
+			encodedValue = shouldEncode ? encodeURIComponent(value) : value;
+			item = `${key}=${encodedValue}`;
+		}
+		return `${accumulator}&${item}`;
+	}, "").substr(1);
+};
+/**
+* Build the RequestInit object based on the options passed into the initial request
+* @param options The Http plugin options
+* @param extra Any extra RequestInit values
+*/
+var buildRequestInit = (options, extra = {}) => {
+	const output = Object.assign({
+		method: options.method || "GET",
+		headers: options.headers
+	}, extra);
+	const type = normalizeHttpHeaders(options.headers)["content-type"] || "";
+	if (typeof options.data === "string") output.body = options.data;
+	else if (type.includes("application/x-www-form-urlencoded")) {
+		const params = new URLSearchParams();
+		for (const [key, value] of Object.entries(options.data || {})) params.set(key, value);
+		output.body = params.toString();
+	} else if (type.includes("multipart/form-data") || options.data instanceof FormData) {
+		const form = new FormData();
+		if (options.data instanceof FormData) options.data.forEach((value, key) => {
+			form.append(key, value);
+		});
+		else for (const key of Object.keys(options.data)) form.append(key, options.data[key]);
+		output.body = form;
+		const headers = new Headers(output.headers);
+		headers.delete("content-type");
+		output.headers = headers;
+	} else if (type.includes("application/json") || typeof options.data === "object") output.body = JSON.stringify(options.data);
+	return output;
+};
+var CapacitorHttpPluginWeb = class extends WebPlugin {
+	/**
+	* Perform an Http request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async request(options) {
+		const requestInit = buildRequestInit(options, options.webFetchExtra);
+		const urlParams = buildUrlParams(options.params, options.shouldEncodeUrlParams);
+		const url = urlParams ? `${options.url}?${urlParams}` : options.url;
+		const response = await fetch(url, requestInit);
+		const contentType = response.headers.get("content-type") || "";
+		let { responseType = "text" } = response.ok ? options : {};
+		if (contentType.includes("application/json")) responseType = "json";
+		let data;
+		let blob;
+		switch (responseType) {
+			case "arraybuffer":
+			case "blob":
+				blob = await response.blob();
+				data = await readBlobAsBase64(blob);
+				break;
+			case "json":
+				data = await response.json();
+				break;
+			default: data = await response.text();
+		}
+		const headers = {};
+		response.headers.forEach((value, key) => {
+			headers[key] = value;
+		});
+		return {
+			data,
+			headers,
+			status: response.status,
+			url: response.url
+		};
+	}
+	/**
+	* Perform an Http GET request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async get(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "GET" }));
+	}
+	/**
+	* Perform an Http POST request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async post(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "POST" }));
+	}
+	/**
+	* Perform an Http PUT request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async put(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "PUT" }));
+	}
+	/**
+	* Perform an Http PATCH request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async patch(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "PATCH" }));
+	}
+	/**
+	* Perform an Http DELETE request given a set of options
+	* @param options Options to build the HTTP request
+	*/
+	async delete(options) {
+		return this.request(Object.assign(Object.assign({}, options), { method: "DELETE" }));
+	}
+};
+registerPlugin("CapacitorHttp", { web: () => new CapacitorHttpPluginWeb() });
+/******** END HTTP PLUGIN ********/
+/******** SYSTEM BARS PLUGIN ********/
+/**
+* Available status bar styles.
+*/
+var SystemBarsStyle;
+(function(SystemBarsStyle) {
+	/**
+	* Light system bar content on a dark background.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Dark"] = "DARK";
+	/**
+	* For dark system bar content on a light background.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Light"] = "LIGHT";
+	/**
+	* The style is based on the device appearance or the underlying content.
+	* If the device is using Dark mode, the system bars content will be light.
+	* If the device is using Light mode, the system bars content will be dark.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarsStyle["Default"] = "DEFAULT";
+})(SystemBarsStyle || (SystemBarsStyle = {}));
+/**
+* Available system bar types.
+*/
+var SystemBarType;
+(function(SystemBarType) {
+	/**
+	* The top status bar on both Android and iOS.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarType["StatusBar"] = "StatusBar";
+	/**
+	* The navigation bar (or gesture bar on iOS) on both Android and iOS.
+	*
+	* @since 8.0.0
+	*/
+	SystemBarType["NavigationBar"] = "NavigationBar";
+})(SystemBarType || (SystemBarType = {}));
+var SystemBarsPluginWeb = class extends WebPlugin {
+	async setStyle() {
+		this.unavailable("not available for web");
+	}
+	async setAnimation() {
+		this.unavailable("not available for web");
+	}
+	async show() {
+		this.unavailable("not available for web");
+	}
+	async hide() {
+		this.unavailable("not available for web");
+	}
+};
+registerPlugin("SystemBars", { web: () => new SystemBarsPluginWeb() });
+// src/utils/nativeBrowser.ts
+var ErtoWebView = registerPlugin("ErtoWebView");
+function isNativeAndroidApk() {
+	return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+}
 // src/components/BrowserViewport.tsx
 function getSpecialMode(url) {
 	if (url.startsWith("erto://search")) return "search";
@@ -51885,7 +52399,9 @@ function extractYouTubeId(urlStr) {
 	}
 	return null;
 }
-function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, user, onGoogleLogin, onGoHome, onNavigate, onGoBack, onGoForward, onToggleBookmark, onRecordHistory, onDownloadPage, onOpenTabsSheet, onOpenExtensions, onOpenOverflowMenu, onToggleDesktopMode }) {
+function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, overlayOpen = false, user, onGoogleLogin, onGoHome, onNavigate, onGoBack, onGoForward, onToggleBookmark, onRecordHistory, onDownloadPage, onOpenTabsSheet, onOpenExtensions, onOpenOverflowMenu, onToggleDesktopMode }) {
+	const nativeApk = isNativeAndroidApk();
+	const headerRef = (0, import_react.useRef)(null);
 	const [addressInput, setAddressInput] = (0, import_react.useState)(tab.query || tab.url);
 	const [loading, setLoading] = (0, import_react.useState)(false);
 	const [searchResults, setSearchResults] = (0, import_react.useState)(null);
@@ -51898,6 +52414,8 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 	const [translateLang, setTranslateLang] = (0, import_react.useState)("id");
 	const [reloadNonce, setReloadNonce] = (0, import_react.useState)(0);
 	const [pageTitle, setPageTitle] = (0, import_react.useState)(tab.title);
+	const [nativeCanGoBack, setNativeCanGoBack] = (0, import_react.useState)(false);
+	const [nativeCanGoForward, setNativeCanGoForward] = (0, import_react.useState)(false);
 	const [sponsorSegments, setSponsorSegments] = (0, import_react.useState)([]);
 	const isExtensionActive = (0, import_react.useCallback)((id) => {
 		const ext = extensions.find((e) => e.id === id);
@@ -51908,7 +52426,19 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 	const translateExtActive = isExtensionActive("google-translate");
 	const sponsorBlockActive = isExtensionActive("sponsorblock");
 	const activeExtCount = extensions.filter((e) => e.installed && e.enabled).length;
-	const mode = getSpecialMode(tab.url);
+	const mode = nativeApk ? "web" : getSpecialMode(tab.url);
+	const resolveNativeTargetUrl = (0, import_react.useCallback)((rawUrl) => {
+		if (!rawUrl.startsWith("erto://search")) return rawUrl;
+		let q = tab.query || "";
+		if (!q) try {
+			q = new URL(rawUrl.replace("erto://", "https://erto.local/")).searchParams.get("q") || "";
+		} catch {}
+		const enc = encodeURIComponent(q);
+		if (settings.searchEngine === "duckduckgo") return `https://duckduckgo.com/?q=${enc}`;
+		if (settings.searchEngine === "bing") return `https://www.bing.com/search?q=${enc}`;
+		if (settings.searchEngine === "yahoo") return `https://search.yahoo.com/search?p=${enc}`;
+		return `https://www.google.com/search?q=${enc}`;
+	}, [settings.searchEngine, tab.query]);
 	(0, import_react.useEffect)(() => {
 		setAddressInput(tab.url.startsWith("erto://search") ? tab.query || "" : tab.url);
 		setPageTitle(tab.title);
@@ -51917,6 +52447,68 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 		tab.url,
 		tab.query,
 		tab.title
+	]);
+	(0, import_react.useEffect)(() => {
+		if (!nativeApk) return;
+		let listenerHandle = null;
+		ErtoWebView.addListener("pageState", (state) => {
+			setLoading(state.loading);
+			if (state.url) setAddressInput(state.url);
+			if (state.title) setPageTitle(state.title);
+			setNativeCanGoBack(Boolean(state.canGoBack));
+			setNativeCanGoForward(Boolean(state.canGoForward));
+			if (!state.loading && state.url) onRecordHistory(state.title || state.url, state.url);
+		}).then((h) => {
+			listenerHandle = h;
+		}).catch(() => {});
+		return () => {
+			listenerHandle?.remove().catch(() => {});
+			ErtoWebView.hide().catch(() => {});
+		};
+	}, [nativeApk]);
+	(0, import_react.useEffect)(() => {
+		if (!nativeApk) return;
+		if (overlayOpen || translatedBody) {
+			ErtoWebView.hide().catch(() => {});
+			return;
+		}
+		const targetUrl = resolveNativeTargetUrl(tab.url);
+		const headerRect = headerRef.current?.getBoundingClientRect();
+		const dpr = window.devicePixelRatio || 1;
+		const topOffsetPx = Math.round((headerRect ? headerRect.bottom : 96) * dpr);
+		ErtoWebView.open({
+			url: targetUrl,
+			topOffsetPx,
+			adblock: adBlockActive,
+			dark: darkReaderActive,
+			desktop: tab.desktopMode,
+			forceReload: reloadNonce > 0
+		}).catch(() => {});
+	}, [
+		nativeApk,
+		tab.url,
+		overlayOpen,
+		translatedBody,
+		reloadNonce
+	]);
+	(0, import_react.useEffect)(() => {
+		if (!nativeApk || overlayOpen || translatedBody) return;
+		const headerRect = headerRef.current?.getBoundingClientRect();
+		const dpr = window.devicePixelRatio || 1;
+		const topOffsetPx = Math.round((headerRect ? headerRect.bottom : 96) * dpr);
+		ErtoWebView.setOptions({
+			adblock: adBlockActive,
+			dark: darkReaderActive,
+			desktop: tab.desktopMode,
+			topOffsetPx
+		}).catch(() => {});
+	}, [
+		nativeApk,
+		overlayOpen,
+		translatedBody,
+		adBlockActive,
+		darkReaderActive,
+		tab.desktopMode
 	]);
 	(0, import_react.useEffect)(() => {
 		const onMessage = (ev) => {
@@ -51938,6 +52530,7 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 		tab.url
 	]);
 	(0, import_react.useEffect)(() => {
+		if (nativeApk) return;
 		let cancelled = false;
 		setTranslatedBody(null);
 		if (mode === "search") {
@@ -52088,12 +52681,13 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 			setTranslating(false);
 		}
 	};
-	const canGoBack = tab.historyIndex > 0;
-	const canGoForward = tab.historyIndex < tab.historyStack.length - 1;
+	const canGoBack = nativeApk ? nativeCanGoBack : tab.historyIndex > 0;
+	const canGoForward = nativeApk ? nativeCanGoForward : tab.historyIndex < tab.historyStack.length - 1;
 	const frameSrc = apiUrl(`/api/frame?url=${encodeURIComponent(tab.url)}&adblock=${adBlockActive ? "1" : "0"}&dark=${darkReaderActive ? "1" : "0"}&desktop=${tab.desktopMode ? "1" : "0"}&r=${reloadNonce}`);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "flex flex-col h-screen bg-slate-50 text-slate-900",
 		children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", {
+			ref: headerRef,
 			className: `shrink-0 px-2.5 pt-2 pb-2 border-b shadow-sm ${tab.incognito ? "bg-slate-900 border-slate-800 text-white" : "bg-[#043b12] border-[#1b7a30] text-white"}`,
 			children: [
 				/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
@@ -52120,7 +52714,7 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 								}),
 								/* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", {
 									type: "button",
-									onClick: () => setReloadNonce((n) => n + 1),
+									onClick: () => nativeApk ? ErtoWebView.reload() : setReloadNonce((n) => n + 1),
 									"aria-label": "Muat Ulang",
 									className: "p-1 text-slate-600 hover:text-emerald-700",
 									children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RotateCw, { className: `w-4 h-4 ${loading ? "animate-spin text-emerald-700" : ""}` })
@@ -52161,14 +52755,14 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 								type: "button",
 								disabled: !canGoBack,
-								onClick: onGoBack,
+								onClick: () => nativeApk ? ErtoWebView.goBack() : onGoBack(),
 								className: "inline-flex items-center gap-1 text-white/90 disabled:opacity-35 hover:text-[#fde047] py-1",
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowLeft, { className: "w-3.5 h-3.5" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Mundur" })]
 							}),
 							/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 								type: "button",
 								disabled: !canGoForward,
-								onClick: onGoForward,
+								onClick: () => nativeApk ? ErtoWebView.goForward() : onGoForward(),
 								className: "inline-flex items-center gap-1 text-white/90 disabled:opacity-35 hover:text-[#fde047] py-1",
 								children: [/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Maju" }), /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ArrowRight, { className: "w-3.5 h-3.5" })]
 							}),
@@ -52485,6 +53079,13 @@ function BrowserViewport({ tab, tabCount, extensions, settings, isBookmarked, us
 						})
 					]
 				})
+			}) : nativeApk ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+				className: "flex-1 flex items-center justify-center bg-white text-slate-600 text-xs",
+				children: [
+					"Memuat ",
+					addressInput,
+					"..."
+				]
 			}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("iframe", {
 				title: pageTitle || tab.url,
 				src: frameSrc,
@@ -52971,6 +53572,37 @@ function ChromeWebStoreModal({ open, extensions, onClose, onInstallCwsItem, onDo
 		setStoreError(null);
 		setSubmittedQuery(q);
 		try {
+			if (isNativeAndroidApk() && !getApiBaseUrl()) {
+				const target = q ? `https://chromewebstore.google.com/search/${encodeURIComponent(q)}` : "https://chromewebstore.google.com/category/extensions";
+				const { text: html } = await ErtoWebView.fetchText({ url: target });
+				const parsed = [];
+				const cards = html.split("<div class=\"Cb7Kte\"");
+				for (let i = 1; i < cards.length && parsed.length < 18; i++) {
+					const chunk = cards[i].slice(0, 4500);
+					const idMatch = chunk.match(/data-item-id="([a-p]{32})"/);
+					const hrefMatch = chunk.match(/href="\.\/detail\/([^"]+)"/);
+					const titleMatch = chunk.match(/<h2 class="CiI2if">([\s\S]*?)<\/h2>/);
+					const imgMatch = chunk.match(/<img[^>]+src="(https:\/\/lh3\.googleusercontent\.com\/[^"]+)"/);
+					const pubMatch = chunk.match(/<span class="cJI8ee[^"]*">([\s\S]*?)<\/span>/);
+					const ratingMatch = chunk.match(/<span class="Vq0ZA">([0-9.]+)<\/span>/);
+					const descMatch = chunk.match(/<p class="g3IrHd"[^>]*>([\s\S]*?)<\/p>/);
+					if (idMatch && titleMatch) {
+						const cwsId = idMatch[1];
+						const clean = (s) => s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+						if (!parsed.some((x) => x.cwsId === cwsId)) parsed.push({
+							cwsId,
+							name: clean(titleMatch[1]),
+							description: descMatch ? clean(descMatch[1]) : "Ekstensi resmi dari Chrome Web Store.",
+							publisher: pubMatch ? clean(pubMatch[1]) : "Chrome Web Store",
+							rating: ratingMatch ? parseFloat(ratingMatch[1]) || 4.5 : 4.5,
+							iconUrl: imgMatch ? imgMatch[1].replace(/&amp;/g, "&") : "",
+							storeUrl: hrefMatch ? `https://chromewebstore.google.com/detail/${hrefMatch[1]}` : `https://chromewebstore.google.com/detail/${cwsId}`
+						});
+					}
+				}
+				setLiveItems(parsed);
+				return;
+			}
 			const res = await fetch(apiUrl(`/api/cws-search?q=${encodeURIComponent(q)}`));
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
@@ -53274,7 +53906,8 @@ function App() {
 			const code = error?.code || "";
 			if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") showToast("Login Google dibatalkan");
 			else if (code === "auth/popup-blocked") showToast("Pop-up diblokir browser. Izinkan pop-up untuk Login Google.");
-			else showToast("Gagal masuk dengan Google. Silakan coba lagi.");
+			else if (code === "auth/unauthorized-domain") showToast(`Domain (${window.location.hostname}) belum diizinkan di Firebase Auth`);
+			else showToast(`Gagal masuk dengan Google${code ? ` (${code})` : ""}.`);
 		} finally {
 			setAuthLoading(false);
 		}
@@ -53684,6 +54317,7 @@ function App() {
 				extensions,
 				settings,
 				isBookmarked: activeIsBookmarked,
+				overlayOpen: tabSheetOpen || menuOpen || voiceOpen || qrOpen || topSitesOpen || webStoreOpen,
 				user,
 				onGoogleLogin: handleGoogleLogin,
 				onGoHome: () => setScreen("home"),

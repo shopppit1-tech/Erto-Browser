@@ -18,7 +18,8 @@ import {
   Info,
 } from 'lucide-react';
 import { AppScreen, BrowserTab, ExtensionItem, TopSiteItem } from '../types/browser';
-import { apiUrl } from '../utils/api';
+import { apiUrl, getApiBaseUrl } from '../utils/api';
+import { ErtoWebView, isNativeAndroidApk } from '../utils/nativeBrowser';
 import { ExtensionIconTile, SiteBrandTile } from './BrandIcons';
 
 /* ---------- Tab Switcher Sheet ---------- */
@@ -553,6 +554,44 @@ export function ChromeWebStoreModal({
     setStoreError(null);
     setSubmittedQuery(q);
     try {
+      if (isNativeAndroidApk() && !getApiBaseUrl()) {
+        const target = q
+          ? `https://chromewebstore.google.com/search/${encodeURIComponent(q)}`
+          : 'https://chromewebstore.google.com/category/extensions';
+        const { text: html } = await ErtoWebView.fetchText({ url: target });
+        const parsed: LiveCwsItem[] = [];
+        const cards = html.split('<div class="Cb7Kte"');
+        for (let i = 1; i < cards.length && parsed.length < 18; i++) {
+          const chunk = cards[i].slice(0, 4500);
+          const idMatch = chunk.match(/data-item-id="([a-p]{32})"/);
+          const hrefMatch = chunk.match(/href="\.\/detail\/([^"]+)"/);
+          const titleMatch = chunk.match(/<h2 class="CiI2if">([\s\S]*?)<\/h2>/);
+          const imgMatch = chunk.match(/<img[^>]+src="(https:\/\/lh3\.googleusercontent\.com\/[^"]+)"/);
+          const pubMatch = chunk.match(/<span class="cJI8ee[^"]*">([\s\S]*?)<\/span>/);
+          const ratingMatch = chunk.match(/<span class="Vq0ZA">([0-9.]+)<\/span>/);
+          const descMatch = chunk.match(/<p class="g3IrHd"[^>]*>([\s\S]*?)<\/p>/);
+          if (idMatch && titleMatch) {
+            const cwsId = idMatch[1];
+            const clean = (s: string) => s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            if (!parsed.some((x) => x.cwsId === cwsId)) {
+              parsed.push({
+                cwsId,
+                name: clean(titleMatch[1]),
+                description: descMatch ? clean(descMatch[1]) : 'Ekstensi resmi dari Chrome Web Store.',
+                publisher: pubMatch ? clean(pubMatch[1]) : 'Chrome Web Store',
+                rating: ratingMatch ? parseFloat(ratingMatch[1]) || 4.5 : 4.5,
+                iconUrl: imgMatch ? imgMatch[1].replace(/&amp;/g, '&') : '',
+                storeUrl: hrefMatch
+                  ? `https://chromewebstore.google.com/detail/${hrefMatch[1]}`
+                  : `https://chromewebstore.google.com/detail/${cwsId}`,
+              });
+            }
+          }
+        }
+        setLiveItems(parsed);
+        return;
+      }
+
       const res = await fetch(apiUrl(`/api/cws-search?q=${encodeURIComponent(q)}`));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
