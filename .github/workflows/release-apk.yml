@@ -68,20 +68,11 @@ jobs:
           ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
           ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
-          else
-            keytool -genkeypair -v \
-              -keystore android/app/release.keystore \
-              -storetype PKCS12 \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -alias "$ERTO_KEY_ALIAS" \
-              -storepass "$ERTO_KEYSTORE_PASSWORD" \
-              -keypass "$ERTO_KEY_PASSWORD" \
-              -dname "CN=Erto Browser, OU=Mobile, O=Erto, L=Jakarta, S=ID, C=ID"
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::Set a persistent ANDROID_KEYSTORE_BASE64 secret before releasing. A generated temporary key prevents updates to installed APKs and changes the Google OAuth SHA-1."
+            exit 1
           fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew

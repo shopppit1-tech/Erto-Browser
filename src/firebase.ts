@@ -1,5 +1,12 @@
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithCredential,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth';
 import {
   getFirestore,
   doc,
@@ -19,6 +26,13 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+interface NativeGoogleSignInPlugin {
+  signIn(options: { serverClientId: string }): Promise<{ idToken: string }>;
+  clearCredentialState(): Promise<void>;
+}
+
+const nativeGoogleSignIn = registerPlugin<NativeGoogleSignInPlugin>('GoogleSignIn');
 
 export enum OperationType {
   CREATE = 'create',
@@ -84,8 +98,24 @@ async function testConnection() {
 testConnection();
 
 export async function signInWithGoogleAccount() {
-  googleProvider.setCustomParameters({ prompt: 'select_account' });
-  const result = await signInWithPopup(auth, googleProvider);
+  let result: Awaited<ReturnType<typeof signInWithPopup>>;
+  if (Capacitor.getPlatform() === 'android') {
+    const nativeCredential = await nativeGoogleSignIn.signIn({
+      serverClientId: firebaseConfig.oAuthClientId,
+    });
+    if (!nativeCredential.idToken) {
+      throw Object.assign(new Error('Google tidak mengembalikan ID token.'), {
+        code: 'auth/invalid-credential',
+      });
+    }
+    result = await signInWithCredential(
+      auth,
+      GoogleAuthProvider.credential(nativeCredential.idToken)
+    );
+  } else {
+    googleProvider.setCustomParameters({ prompt: 'select_account' });
+    result = await signInWithPopup(auth, googleProvider);
+  }
   const u = result.user;
   if (u && u.email) {
     const profilePath = `users/${u.uid}`;
@@ -110,6 +140,9 @@ export async function signInWithGoogleAccount() {
 
 export async function signOutGoogleAccount() {
   await signOut(auth);
+  if (Capacitor.getPlatform() === 'android') {
+    await nativeGoogleSignIn.clearCredentialState().catch(() => undefined);
+  }
 }
 
 export {
