@@ -98,7 +98,7 @@ export function HomeView({
   return (
     <div className="w-full max-w-5xl mx-auto px-4 pt-3 pb-24 space-y-4">
       {/* Top Brand Header */}
-      <header className="flex items-center justify-between gap-3">
+      <header className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative w-13 h-13 sm:w-14 sm:h-14 rounded-2xl overflow-hidden border border-[#4ade80]/60 shadow-[0_0_18px_rgba(74,222,128,0.35)] shrink-0 bg-[#032a0b]">
             <img
@@ -127,7 +127,7 @@ export function HomeView({
         </div>
 
         {/* Right Header Actions: Google Account, Install App (when eligible), Tabs, Extensions Puzzle, 3-dot Menu */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center justify-end gap-1 shrink-0 self-end sm:self-auto">
           {user ? (
             <button
               type="button"
