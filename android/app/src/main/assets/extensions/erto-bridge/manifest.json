@@ -8,7 +8,15 @@
       "id": "extensions@erto.browser"
     }
   },
-  "permissions": ["webRequest", "webRequestBlocking", "<all_urls>", "storage"],
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "<all_urls>",
+    "storage",
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ],
   "background": {
     "scripts": ["background.js"]
   },
