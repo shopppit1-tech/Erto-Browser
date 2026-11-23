@@ -125,18 +125,29 @@ export default function App() {
     DEFAULT_BROWSER_SETTINGS
   );
 
+  // Older APK builds and interrupted migrations may leave an invalid extension
+  // value in localStorage. Keep the panel render-safe while native state loads.
+  const extensionList = Array.isArray(extensions) ? extensions : DEFAULT_EXTENSIONS;
+  useEffect(() => {
+    if (!Array.isArray(extensions)) setExtensions(DEFAULT_EXTENSIONS);
+  }, [extensions, setExtensions]);
+
   useEffect(() => {
     // GeckoView initialization is expensive and can crash on unsupported devices;
     // keep it off the startup path and load native extension state on demand.
     if (!isNativeAndroidApk() || screen !== 'extensions') return;
     let disposed = false;
-    ErtoWebView.listExtensions()
+    const listExtensions = ErtoWebView.listExtensions;
+    if (typeof listExtensions !== 'function') return;
+    listExtensions.call(ErtoWebView)
       .then(({ extensions: runtimeExtensions }) => {
         if (disposed) return;
+        const runtimeList = Array.isArray(runtimeExtensions) ? runtimeExtensions : [];
         setExtensions((previous) => DEFAULT_EXTENSIONS.map((item) => {
-          const oldItem = previous.find((candidate) => candidate.id === item.id);
+          const previousList = Array.isArray(previous) ? previous : DEFAULT_EXTENSIONS;
+          const oldItem = previousList.find((candidate) => candidate.id === item.id);
           const slug = item.amoSlug?.toLowerCase();
-          const installed = runtimeExtensions.find((nativeExtension) =>
+          const installed = runtimeList.find((nativeExtension) =>
             (oldItem?.runtimeId && nativeExtension.runtimeId === oldItem.runtimeId) ||
             (item.amoPageUrl && nativeExtension.amoPageUrl === item.amoPageUrl) ||
             (slug && `${nativeExtension.amoPageUrl} ${nativeExtension.xpiUrl}`.toLowerCase().includes(slug))
@@ -313,8 +324,8 @@ export default function App() {
   );
 
   const installedExtCount = useMemo(
-    () => extensions.filter((e) => e.installed && e.enabled).length,
-    [extensions]
+    () => extensionList.filter((e) => e.installed && e.enabled).length,
+    [extensionList]
   );
 
   const navigateScreen = useCallback(
@@ -793,7 +804,7 @@ export default function App() {
         <BrowserViewport
           tab={activeTab}
           tabCount={tabs.length}
-          extensions={extensions}
+          extensions={extensionList}
           settings={settings}
           isBookmarked={activeIsBookmarked}
           overlayOpen={tabSheetOpen || menuOpen || voiceOpen || qrOpen || topSitesOpen || webStoreOpen}
@@ -843,7 +854,7 @@ export default function App() {
 
           {screen === 'extensions' && (
             <ExtensionsView
-              extensions={extensions}
+              extensions={extensionList}
               extSettings={extSettings}
               onBack={() => setScreen(previousScreen === 'browser' && activeTab?.url ? 'browser' : 'home')}
               onInstallToggle={handleInstallExtension}
@@ -1062,7 +1073,7 @@ export default function App() {
 
       <ChromeWebStoreModal
         open={webStoreOpen}
-        extensions={extensions}
+        extensions={extensionList}
         onClose={() => setWebStoreOpen(false)}
         onInstallCwsItem={handleInstallCwsItem}
         onDownloadCrx={handleDownloadCrx}
