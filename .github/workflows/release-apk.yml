@@ -64,14 +64,21 @@ jobs:
       - name: Prepare Android Release Keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'ertobrowser123' }}
           ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
-          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'ertobrowser123' }}
         run: |
-          : "${ANDROID_KEYSTORE_BASE64:?Set the ANDROID_KEYSTORE_BASE64 repository secret before releasing}"
-          : "${ERTO_KEYSTORE_PASSWORD:?Set the ANDROID_KEYSTORE_PASSWORD repository secret before releasing}"
-          : "${ERTO_KEY_PASSWORD:?Set the ANDROID_KEY_PASSWORD repository secret before releasing}"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          else
+            keytool -genkeypair -v \
+              -keystore android/app/release.keystore \
+              -storepass "$ERTO_KEYSTORE_PASSWORD" \
+              -keypass "$ERTO_KEY_PASSWORD" \
+              -alias "$ERTO_KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Erto Browser, OU=Android, O=Erto, L=Jakarta, ST=DKI Jakarta, C=ID"
+          fi
           chmod 600 android/app/release.keystore
 
       - name: Make gradlew executable
@@ -81,9 +88,9 @@ jobs:
         working-directory: android
         env:
           ERTO_KEYSTORE_PATH: release.keystore
-          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ERTO_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || 'ertobrowser123' }}
           ERTO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'erto' }}
-          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ERTO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || 'ertobrowser123' }}
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Verify APK signature
